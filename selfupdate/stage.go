@@ -133,7 +133,7 @@ func fetchSums(ctx context.Context, c *http.Client, rel *Release) (map[string]st
 	if !ok {
 		return nil, fmt.Errorf("该 Release 没有 %s，无法校验完整性，拒绝升级", sumsAsset)
 	}
-	body, err := get(ctx, c, asset.URL)
+	body, err := get(ctx, c, asset.downloadURL())
 	if err != nil {
 		return nil, fmt.Errorf("下载 %s: %w", sumsAsset, err)
 	}
@@ -189,7 +189,7 @@ func isHexSHA256(s string) bool {
 
 // download 把资产写入 dst，同时计算 SHA256 并按 Content-Length 汇报进度。
 func download(ctx context.Context, c *http.Client, a Asset, dst string, prog Progress) (string, error) {
-	body, err := get(ctx, c, a.URL)
+	body, err := get(ctx, c, a.downloadURL())
 	if err != nil {
 		return "", fmt.Errorf("下载 %s: %w", a.Name, err)
 	}
@@ -225,6 +225,8 @@ func get(ctx context.Context, c *http.Client, rawURL string) (io.ReadCloser, err
 		return nil, err
 	}
 	req.Header.Set("User-Agent", "artex-selfupdate")
+	req.Header.Set("Accept", "application/octet-stream")
+	setUpdateAuth(req)
 	resp, err := c.Do(req)
 	if err != nil {
 		return nil, err

@@ -6,13 +6,17 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 )
 
 // Repo 是发布源。写死而不是做成配置项：更新源可配等于给任何能改配置的人一条
 // 远程代码执行通道，对一个渗透测试平台来说这个口子开不得。
-const Repo = "Autumn-27/artex"
+const Repo = "Hinln/ARTEX"
+
+// GitHubTokenEnv 只由后端进程读取，不通过前端或配置 API 传递令牌。
+const GitHubTokenEnv = "ARTEX_UPDATE_GITHUB_TOKEN"
 
 // latestURL 是 GitHub 的"最新正式版"接口。它会自动跳过 prerelease 和 draft。
 const latestURL = "https://api.github.com/repos/" + Repo + "/releases/latest"
@@ -42,9 +46,33 @@ type Release struct {
 
 // Asset 是 Release 上挂的一个文件。
 type Asset struct {
-	Name string `json:"name"`
-	URL  string `json:"browser_download_url"`
-	Size int64  `json:"size"`
+	Name   string `json:"name"`
+	URL    string `json:"browser_download_url"`
+	APIURL string `json:"url"`
+	Size   int64  `json:"size"`
+}
+
+// 私有仓库的附件需通过 Release Asset API 携带认证下载。
+func (a Asset) downloadURL() string {
+	if a.APIURL != "" {
+		return a.APIURL
+	}
+	return a.URL
+}
+
+// setUpdateAuth 仅向固定发布仓库的 HTTPS API 发送令牌。附件重定向到
+// GitHub 对象存储时使用签名 URL，不得把 Authorization 一并转发。
+func setUpdateAuth(req *http.Request) {
+	req.Header.Del("Authorization")
+	u := req.URL
+	if u.Scheme != "https" || !strings.EqualFold(u.Hostname(), "api.github.com") ||
+		(u.Port() != "" && u.Port() != "443") || u.User != nil ||
+		!strings.HasPrefix(strings.ToLower(u.EscapedPath()), strings.ToLower("/repos/"+Repo+"/releases/")) {
+		return
+	}
+	if token := strings.TrimSpace(os.Getenv(GitHubTokenEnv)); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 }
 
 // NewClient 构造一个只认 GitHub 域名的 HTTP 客户端。proxy 为空则直连。
@@ -68,7 +96,11 @@ func NewClient(proxy string) *http.Client {
 			if len(via) >= 10 {
 				return fmt.Errorf("重定向次数过多")
 			}
-			return checkURL(req.URL)
+			if err := checkURL(req.URL); err != nil {
+				return err
+			}
+			setUpdateAuth(req)
+			return nil
 		},
 	}
 }
@@ -95,6 +127,7 @@ func FetchLatest(ctx context.Context, c *http.Client) (*Release, error) {
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("User-Agent", "artex-selfupdate")
+	setUpdateAuth(req)
 
 	resp, err := c.Do(req)
 	if err != nil {
@@ -103,11 +136,14 @@ func FetchLatest(ctx context.Context, c *http.Client) (*Release, error) {
 	defer resp.Body.Close()
 
 	switch {
-	case resp.StatusCode == http.StatusForbidden, resp.StatusCode == http.StatusTooManyRequests:
-		// 未认证的 GitHub API 是每 IP 每小时 60 次，共用出口 IP 时很容易撞上。
-		return nil, fmt.Errorf("GitHub 接口限流（每小时 60 次），请稍后再试")
+	case resp.StatusCode == http.StatusUnauthorized:
+		return nil, fmt.Errorf("GitHub 认证失败，请检查后端环境变量 %s", GitHubTokenEnv)
+	case resp.StatusCode == http.StatusForbidden:
+		return nil, fmt.Errorf("GitHub 拒绝访问：请检查令牌的仓库 Contents 读取权限或 API 限额")
+	case resp.StatusCode == http.StatusTooManyRequests:
+		return nil, fmt.Errorf("GitHub 接口限流，请稍后再试")
 	case resp.StatusCode == http.StatusNotFound:
-		return nil, fmt.Errorf("仓库 %s 尚未发布任何正式版本", Repo)
+		return nil, fmt.Errorf("仓库 %s 不可访问或尚未发布正式版本；私有仓库请在后端设置 %s（需 Contents 读取权限）", Repo, GitHubTokenEnv)
 	case resp.StatusCode != http.StatusOK:
 		return nil, fmt.Errorf("GitHub 返回 %d", resp.StatusCode)
 	}
