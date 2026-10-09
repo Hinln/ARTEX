@@ -81,7 +81,7 @@ cd ARTEX
 
 装好后打开 **http://localhost:8787**（首次进入 `/setup` 设置管理员密码）。
 
-### 方式二：Docker Compose（手动）
+### 方式二：Docker Compose（推荐）
 
 ```bash
 git clone https://github.com/Hinln/ARTEX.git
