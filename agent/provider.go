@@ -33,7 +33,11 @@ type Config struct {
 	Format  llm.Format
 	BaseURL string
 	APIKey  string
-	Model   string
+	// ChatGPTTokenSource supplies a short-lived OAuth access token for each request.
+	// It is only set for the ChatGPT plan integration; the credential itself never
+	// enters the profile database or the provider's static API key field.
+	ChatGPTTokenSource *ChatGPTTokenSource
+	Model              string
 	// Proxy routes all LLM requests through the given proxy URL (http/https/socks5,
 	// optionally with user:pass@ credentials). Empty means direct — it does NOT
 	// fall back to the standard *_PROXY environment variables.
@@ -77,6 +81,10 @@ type Config struct {
 	// Retry 是该配置解析后的重试参数(profile 覆盖 → 全局策略 → 内置默认,由
 	// server 侧解析)。三层的含义见 RetryConfig;零值 = 完全沿用内置默认。
 	Retry RetryConfig
+}
+
+type ChatGPTTokenSource struct {
+	Get func(context.Context) (string, error)
 }
 
 // RetryConfig 是随一个 LLM 配置走的重试参数。每层的「次数」统一语义:
@@ -258,6 +266,9 @@ func (c Config) NewProvider() (llm.Provider, error) {
 	if err != nil {
 		return nil, err
 	}
+	if c.ChatGPTTokenSource != nil {
+		client.Transport = chatGPTAuthTransport{base: client.Transport, token: c.ChatGPTTokenSource.Get}
+	}
 	lc := llm.Config{
 		Format:     c.Format,
 		BaseURL:    c.BaseURL,
@@ -280,7 +291,52 @@ func (c Config) NewProvider() (llm.Provider, error) {
 	if c.RatePerSecond > 0 || c.RatePerMinute > 0 {
 		lc.RateLimit = &llm.RateLimit{PerSecond: c.RatePerSecond, PerMinute: c.RatePerMinute}
 	}
-	return llm.NewProvider(lc)
+	provider, err := llm.NewProvider(lc)
+	if err != nil {
+		return nil, err
+	}
+	if c.ChatGPTTokenSource != nil {
+		return chatGPTStreamingProvider{Provider: provider}, nil
+	}
+	return provider, nil
+}
+
+type chatGPTAuthTransport struct {
+	base  http.RoundTripper
+	token func(context.Context) (string, error)
+}
+
+func (t chatGPTAuthTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	token, err := t.token(req.Context())
+	if err != nil {
+		return nil, err
+	}
+	clone := req.Clone(req.Context())
+	clone.Header = req.Header.Clone()
+	clone.Header.Set("Authorization", "Bearer "+token)
+	return t.base.RoundTrip(clone)
+}
+
+// ChatGPT plan OAuth is limited to streaming Responses API requests. Adapt the
+// provider's Complete method to consume its stream, while preserving Stream.
+type chatGPTStreamingProvider struct{ llm.Provider }
+
+func (p chatGPTStreamingProvider) Complete(ctx context.Context, req llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
+	acc := llm.NewAccumulator()
+	completed := false
+	for event, err := range p.Provider.Stream(ctx, req) {
+		if err != nil {
+			return llm.Message{}, "", llm.Usage{}, err
+		}
+		acc.Add(event)
+		if event.StopReason != "" {
+			completed = true
+		}
+	}
+	if !completed {
+		return llm.Message{}, "", llm.Usage{}, fmt.Errorf("ChatGPT Responses stream ended before a terminal response event")
+	}
+	return acc.Message(), acc.StopReason, acc.Usage, nil
 }
 
 // IsQuotaExhaustedMessage deliberately recognizes only explicit balance,
