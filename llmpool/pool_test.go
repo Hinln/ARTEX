@@ -368,3 +368,31 @@ func TestExpiredWindowIsClosed(t *testing.T) {
 		t.Fatal("expired window should read as closed")
 	}
 }
+
+// Five duplicate keys sharing one rank round-robin (each leads at least once),
+// and the lower-rank fallback stays untouched while every equal-rank key is
+// healthy. Mirrors the deployed shape: unli-1..5 at RankActive + 42x at 0.
+func TestRoundRobinFiveKeysWithFallback(t *testing.T) {
+	members := make([]*Member, 0, 6)
+	for i := 1; i <= 5; i++ {
+		n := fmt.Sprintf("k%d", i)
+		members = append(members, member(int64(i), n, RankActive, okProv(n, n)))
+	}
+	members = append(members, member(6, "fallback", 0, okProv("fallback", "F")))
+	p := New(members, NewRegistry(nil, nil))
+
+	counts := map[string]int{}
+	for range 10 {
+		txt, _ := drain(p.Stream(context.Background(), llm.CompletionRequest{}))
+		counts[txt]++
+	}
+	for i := 1; i <= 5; i++ {
+		if counts[fmt.Sprintf("k%d", i)] == 0 {
+			t.Fatalf("key k%d never led; distribution=%v", i, counts)
+		}
+	}
+	if counts["F"] != 0 {
+		t.Fatalf("fallback used while healthy keys exist: %v", counts)
+	}
+	t.Logf("distribution over 10 calls: %v", counts)
+}

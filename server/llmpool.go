@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"log"
 	"time"
 
@@ -100,13 +101,34 @@ func (s *Server) poolChain(headID int64, headProv llm.Provider, headCfg agent.Co
 			return nil
 		}
 	}
+	// Round-robin group: profiles sharing the head's endpoint (format+base_url+
+	// model) AND priority are duplicate keys for the same model, so they should
+	// take turns leading instead of the active profile pinning every request.
+	// rotateGroups only rotates members of equal Rank, so the head joins them by
+	// sharing RankActive; anything with a different endpoint or priority keeps
+	// its place as a strict failover target.
+	headKey := endpointKey(head)
+	sameGroup := func(p *db.LLMProfile) bool {
+		return p.ID != headID && endpointKey(p) == headKey && p.Priority == head.Priority
+	}
 	members := []*llmpool.Member{{
 		ID: head.ID, Name: head.Name, Model: head.Model, Format: head.Format,
 		Priority: head.Priority, Active: head.IsDefault, Rank: llmpool.RankActive,
 		WindowTokens: headCfg.CompactionWindow(), Prov: headProv,
 	}}
+	// Group members go right after the head so they form ONE contiguous equal-rank
+	// run — rotateGroups rotates within a run, so an interleaved different-rank
+	// member would split it and stop the rotation.
 	for _, p := range profs {
-		if p.ID == headID {
+		if !sameGroup(p) {
+			continue
+		}
+		if m := s.poolMember(p, llmpool.RankActive); m != nil {
+			members = append(members, m)
+		}
+	}
+	for _, p := range profs {
+		if p.ID == headID || sameGroup(p) {
 			continue
 		}
 		// The globally active profile outranks the others when it isn't the head
@@ -122,7 +144,22 @@ func (s *Server) poolChain(headID int64, headProv llm.Provider, headCfg agent.Co
 	if len(members) < 2 {
 		return nil // nothing to fail over to
 	}
+	// 打印链序与 Rank：只有同 Rank 的相邻成员才会轮流打头（轮询分摊），
+	// 所以这一行能直接确认「同端点同优先级的配置是否真的组成了轮询组」。
+	parts := make([]string, 0, len(members))
+	for _, m := range members {
+		parts = append(parts, fmt.Sprintf("%s/r%d", m.Name, m.Rank))
+	}
+	log.Printf("[llmpool] 构建轮询链: %v", parts)
 	return llmpool.New(members, s.llmHealth)
+}
+
+// endpointKey identifies "the same model served by the same endpoint". Profiles
+// sharing it (and the same priority) are duplicate keys that load-balance rather
+// than strictly fail over. Format is included so an anthropic and an openai
+// profile on the same URL never get treated as one group.
+func endpointKey(p *db.LLMProfile) string {
+	return p.Format + "\x00" + p.BaseURL + "\x00" + p.Model
 }
 
 // poolForActive wraps the globally-active provider in the failover chain. Returns
