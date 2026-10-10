@@ -39,9 +39,11 @@ var BuildVersion = "dev"
 // Server exposes the ARTEX backend over a JSON HTTP API for the shadcn/ui
 // frontend.
 type Server struct {
-	m      *Manager
-	engine *Engine
-	ctx    context.Context
+	m                  *Manager
+	engine             *Engine
+	ctx                context.Context
+	chatGPT            *chatGPTPlan
+	chatGPTTokenSource *agent.ChatGPTTokenSource
 
 	skillDir string // root directory for skill subdirectories
 	jwtKey   []byte // HS256 signing key loaded from / generated into dataDir/jwt.key
@@ -145,12 +147,13 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 	if err != nil {
 		log.Fatalf("[auth] JWT key: %v", err)
 	}
-	s := &Server{m: m, engine: NewEngine(m), ctx: ctx, skillDir: skillDir, jwtKey: key, chatBusy: map[string]bool{},
+	s := &Server{m: m, engine: NewEngine(m), ctx: ctx, skillDir: skillDir, jwtKey: key, chatGPT: newChatGPTPlan(dataDir), chatBusy: map[string]bool{},
 		chatCancel: map[string]context.CancelCauseFunc{}, triggerQ: map[string][]triggeredRun{},
 		triggerActive: map[string]int{}, triggerCfg: map[string]triggerBehavior{},
 		profChatAgents: map[int64]*agent.ChatAgent{},
 		provByProfile:  map[int64]*provEntry{}, llmHealth: newLLMHealthRegistry(m.pg),
 		taskAgents: map[string]*taskAgentBundle{}, archiveWake: make(chan struct{}, 1)}
+	s.chatGPTTokenSource = &agent.ChatGPTTokenSource{Get: s.chatGPT.accessToken}
 	s.initSideQuestions()
 	// 熔断阈值/冷却是失败路径上的热参数，启动时把全局重试策略推给 Registry 一次；
 	// 之后每次保存策略再推一次（saveLLMRetryPolicy）。
@@ -326,6 +329,13 @@ func (s *Server) loadLLMConfig() (agent.Config, bool) {
 		return agent.Config{}, false
 	}
 	cfg := agent.ConfigFrom(p.Format, p.Model, p.BaseURL, p.APIKey, p.Proxy)
+	if p.APIKey == chatGPTPlanAPIKey {
+		cfg.APIKey = "chatgpt-plan"
+		cfg.BaseURL = chatGPTResource
+		cfg.Format = llm.FormatOpenAIResponses
+		cfg.Stream = true
+		cfg.ChatGPTTokenSource = s.chatGPTTokenSource
+	}
 	cfg.RatePerSecond, cfg.RatePerMinute = p.RatePerSecond, p.RatePerMinute
 	cfg.ContextWindowK = p.ContextWindowK
 	cfg.ThinkingType = p.ThinkingType
@@ -333,6 +343,9 @@ func (s *Server) loadLLMConfig() (agent.Config, bool) {
 	cfg.Stream = p.Streaming
 	cfg.MaxTokens, cfg.MaxTokensField = p.MaxTokens, p.MaxTokensField
 	cfg.SessionHeaderKey = p.SessionHeaderKey
+	if p.APIKey == chatGPTPlanAPIKey {
+		cfg.Stream = true
+	}
 	s.applyProfileRetry(&cfg, p)
 	if cfg.APIKey == "" {
 		return cfg, false
@@ -497,6 +510,13 @@ func (s *Server) loadProfileConfig(id int64) (agent.Config, bool) {
 		return agent.Config{}, false
 	}
 	cfg := agent.ConfigFrom(p.Format, p.Model, p.BaseURL, p.APIKey, p.Proxy)
+	if p.APIKey == chatGPTPlanAPIKey {
+		cfg.APIKey = "chatgpt-plan"
+		cfg.BaseURL = chatGPTResource
+		cfg.Format = llm.FormatOpenAIResponses
+		cfg.Stream = true
+		cfg.ChatGPTTokenSource = s.chatGPTTokenSource
+	}
 	cfg.RatePerSecond, cfg.RatePerMinute = p.RatePerSecond, p.RatePerMinute
 	cfg.ContextWindowK = p.ContextWindowK
 	cfg.ThinkingType = p.ThinkingType
@@ -504,6 +524,9 @@ func (s *Server) loadProfileConfig(id int64) (agent.Config, bool) {
 	cfg.Stream = p.Streaming
 	cfg.MaxTokens, cfg.MaxTokensField = p.MaxTokens, p.MaxTokensField
 	cfg.SessionHeaderKey = p.SessionHeaderKey
+	if p.APIKey == chatGPTPlanAPIKey {
+		cfg.Stream = true
+	}
 	s.applyProfileRetry(&cfg, p)
 	if cfg.APIKey == "" {
 		return cfg, false
@@ -656,6 +679,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/auth/init", s.authInit)
 	mux.HandleFunc("POST /api/auth/login", s.authLogin)
 	mux.HandleFunc("POST /api/auth/change-password", s.authChangePassword)
+	mux.HandleFunc("GET /api/llm/chatgpt/callback", s.chatGPTCallback)
 
 	mux.HandleFunc("GET /api/health", s.health)
 	mux.HandleFunc("GET /api/stats", s.stats)
@@ -735,6 +759,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/active", s.setActive)
 
 	mux.HandleFunc("GET /api/llm", s.getLLM)
+	mux.HandleFunc("GET /api/llm/chatgpt", s.chatGPTStatus)
+	mux.HandleFunc("POST /api/llm/chatgpt/connect", s.chatGPTConnect)
+	mux.HandleFunc("GET /api/llm/chatgpt/models", s.chatGPTModels)
+	mux.HandleFunc("POST /api/llm/chatgpt/use", s.chatGPTUse)
 	mux.HandleFunc("POST /api/llm", s.setLLM)
 	mux.HandleFunc("POST /api/llm/test", s.testLLM)
 
@@ -940,6 +968,114 @@ func (s *Server) Handler() http.Handler {
 	root.Handle("/api/", api)
 	root.Handle("/", s.webuiHandler())
 	return root
+}
+
+func (s *Server) chatGPTStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, 200, s.chatGPT.status())
+}
+
+func chatGPTReturnURL(r *http.Request, preferredPort string) string {
+	host, port, err := net.SplitHostPort(r.Host)
+	if err != nil {
+		host, port = r.Host, "8787"
+	}
+	if n, err := strconv.Atoi(preferredPort); err == nil && n > 0 && n <= 65535 {
+		port = preferredPort
+	}
+	host = strings.Trim(strings.ToLower(host), "[]")
+	if host != "localhost" && host != "127.0.0.1" && host != "::1" {
+		host = "localhost"
+		port = "8787"
+	}
+	if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
+		port = "8787"
+	}
+	if host == "::1" {
+		host = "[::1]"
+	}
+	return "http://" + net.JoinHostPort(strings.Trim(host, "[]"), port) + "/system/llm?chatgpt=connected"
+}
+
+func (s *Server) chatGPTConnect(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		CallbackPort string `json:"callback_port"`
+	}
+	if err := decode(r, &body); err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	url, err := s.chatGPT.begin(chatGPTReturnURL(r, body.CallbackPort), body.CallbackPort)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]string{"authorization_url": url})
+}
+
+func (s *Server) chatGPTCallback(w http.ResponseWriter, r *http.Request) {
+	if err := s.chatGPT.complete(r.Context(), r.URL.Query()); err != nil {
+		log.Printf("[llm] ChatGPT OAuth callback failed: %v", err)
+		http.Error(w, "ARTEX 无法完成 ChatGPT 连接。请返回 ARTEX 的 LLM 页面查看状态并重试。", http.StatusBadRequest)
+		return
+	}
+	s.invalidateProfileAgents()
+	returnTo := s.chatGPT.takeReturnTo(r.URL.Query().Get("state"))
+	if returnTo == "" {
+		returnTo = chatGPTReturnURL(r, "")
+	}
+	http.Redirect(w, r, returnTo, http.StatusSeeOther)
+}
+
+func (s *Server) chatGPTModels(w http.ResponseWriter, r *http.Request) {
+	models, err := s.chatGPT.models(r.Context())
+	if err != nil {
+		writeErr(w, 502, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"models": models})
+}
+
+func (s *Server) chatGPTUse(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Model string `json:"model"`
+	}
+	if err := decode(r, &body); err != nil || strings.TrimSpace(body.Model) == "" {
+		writeErr(w, 400, "请选择 ChatGPT 模型")
+		return
+	}
+	if _, err := s.chatGPT.accessToken(r.Context()); err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	pg := s.pg(w)
+	if pg == nil {
+		return
+	}
+	profiles, err := pg.ListProfiles()
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	var id int64
+	for _, profile := range profiles {
+		if profile.APIKey == chatGPTPlanAPIKey {
+			id = profile.ID
+			break
+		}
+	}
+	p := &db.LLMProfile{ID: id, Name: "ChatGPT", Format: "openai-responses", BaseURL: chatGPTResource,
+		Model: strings.TrimSpace(body.Model), APIKey: chatGPTPlanAPIKey, APIKeyHint: "ChatGPT plan", IsDefault: true, Streaming: true}
+	id, err = pg.SaveProfile(p)
+	if err == nil {
+		err = pg.SetActiveProfile(id)
+	}
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	s.invalidateProfileAgents()
+	s.reapplyActiveProfile()
+	writeJSON(w, 200, map[string]any{"id": id})
 }
 
 // --- handlers ---

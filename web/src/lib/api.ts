@@ -956,6 +956,10 @@ export const api = {
       session_header_key,
     }),
   llmProfiles: () => get<{ profiles: LLMProfile[] }>("/llm/profiles").then((r) => arr(r.profiles)),
+  chatGPTStatus: () => get<{ connected: boolean; email?: string; plan_usage_enabled?: boolean }>("/llm/chatgpt"),
+  connectChatGPT: (callbackPort: string) => post<{ authorization_url: string }>("/llm/chatgpt/connect", { callback_port: callbackPort }),
+  chatGPTModels: () => get<{ models: { slug: string; display_name: string }[] }>("/llm/chatgpt/models"),
+  enableChatGPT: (model: string) => post<{ id: number }>("/llm/chatgpt/use", { model }),
   saveLLMProfile: (p: {
     id?: number; // omit/0 = create; set = update that profile
     name: string;

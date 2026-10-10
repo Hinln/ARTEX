@@ -787,6 +787,10 @@ function ProfileSheet({
 
 export default function LLMPage() {
   const [profiles, setProfiles] = React.useState<LLMProfile[]>([]);
+  const [chatGPT, setChatGPT] = React.useState<{ connected: boolean; email?: string; plan_usage_enabled?: boolean }>({ connected: false });
+  const [chatGPTModels, setChatGPTModels] = React.useState<{ slug: string; display_name: string }[]>([]);
+  const [chatGPTModel, setChatGPTModel] = React.useState("");
+  const [chatGPTBusy, setChatGPTBusy] = React.useState(false);
   const [pool, setPool] = React.useState<LLMPoolStatus | null>(null);
   const [poolOpen, setPoolOpen] = React.useState(false);
   // 抽屉的开关和内容分开存：关闭时 editing 保持不变，否则关闭动画期间标题会从
@@ -815,9 +819,22 @@ export default function LLMPage() {
     await loadPool();
   }, [loadPool]);
 
+  const loadChatGPT = React.useCallback(async () => {
+    try {
+      const status = await api.chatGPTStatus();
+      setChatGPT(status);
+      if (status.connected) {
+        const result = await api.chatGPTModels();
+        setChatGPTModels(result.models);
+        setChatGPTModel((current) => current || result.models[0]?.slug || "");
+      }
+    } catch { /* connection status remains visible as disconnected */ }
+  }, []);
+
   React.useEffect(() => {
     void load();
-  }, [load]);
+    void loadChatGPT();
+  }, [load, loadChatGPT]);
 
   // 卡片上的健康徽章按 profile id 取轮询状态。
   const health = React.useMemo(() => {
@@ -850,6 +867,28 @@ export default function LLMPage() {
     }
   }
 
+  async function connectChatGPT() {
+    setChatGPTBusy(true);
+    try {
+      const result = await api.connectChatGPT(window.location.port || "8787");
+      window.location.assign(result.authorization_url);
+    } catch (e) {
+      toast.error(`连接 ChatGPT 失败：${(e as Error).message}`);
+      setChatGPTBusy(false);
+    }
+  }
+
+  async function activateChatGPT() {
+    if (!chatGPTModel) return;
+    setChatGPTBusy(true);
+    try {
+      await api.enableChatGPT(chatGPTModel);
+      toast.success("ChatGPT 已设为当前 LLM");
+      await load();
+    } catch (e) { toast.error(`启用失败：${(e as Error).message}`); }
+    finally { setChatGPTBusy(false); }
+  }
+
   const poolOn = pool?.enabled ?? false;
 
   return (
@@ -875,6 +914,36 @@ export default function LLMPage() {
           </Button>
         </div>
       </div>
+
+      <Card>
+        <CardContent className="flex flex-wrap items-center justify-between gap-4 p-4">
+          <div className="min-w-64 flex-1">
+            <div className="font-medium">使用 ChatGPT 套餐</div>
+            <p className="text-muted-foreground text-sm">
+              {chatGPT.connected
+                ? `已连接${chatGPT.email ? `：${chatGPT.email}` : ""}。模型请求由你的 ChatGPT 授权处理。`
+                : "通过 OpenAI 官方授权连接 ChatGPT，并在 ARTEX 中使用可用模型。"}
+            </p>
+          </div>
+          {!chatGPT.connected ? (
+            <Button size="sm" variant="outline" onClick={() => void connectChatGPT()} disabled={chatGPTBusy}>
+              {chatGPTBusy ? <Loader2Icon className="animate-spin" /> : <PlugZapIcon />} 连接 ChatGPT
+            </Button>
+          ) : (
+            <div className="flex flex-wrap items-center gap-2">
+              <Select value={chatGPTModel} onValueChange={setChatGPTModel}>
+                <SelectTrigger className="w-56"><SelectValue placeholder="选择模型" /></SelectTrigger>
+                <SelectContent>
+                  {chatGPTModels.map((model) => <SelectItem key={model.slug} value={model.slug}>{model.display_name || model.slug}</SelectItem>)}
+                </SelectContent>
+              </Select>
+              <Button size="sm" onClick={() => void activateChatGPT()} disabled={chatGPTBusy || !chatGPTModel}>
+                {chatGPTBusy && <Loader2Icon className="animate-spin" />} 设为当前 LLM
+              </Button>
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       <Tabs defaultValue="profiles" className="flex-1">
         <TabsList>
