@@ -177,6 +177,11 @@ func TestTaskPauseCauseSurvivesImmediateResume(t *testing.T) {
 	if old.Err() == nil || !taskExecutionPaused(context.Cause(old)) {
 		t.Fatalf("old execution cause=%v was not retained as a task pause", context.Cause(old))
 	}
+	proxyCtx, proxyCancel := context.WithCancelCause(context.Background())
+	proxyCancel(agent.AbortPausedByProxy)
+	if !taskExecutionPaused(context.Cause(proxyCtx)) {
+		t.Fatalf("proxy pause cause=%v was not classified as a task pause", context.Cause(proxyCtx))
+	}
 	if taskExecutionPaused(agent.AbortGoalMet) {
 		t.Fatal("goal completion was misclassified as a task pause")
 	}

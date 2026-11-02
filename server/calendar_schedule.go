@@ -188,6 +188,43 @@ func (s *Server) taskManualScheduleEnd(taskID string, now time.Time) (*time.Time
 	return until, nil
 }
 
+// proxyResumeInsideSchedule reports whether a task attached to any enabled
+// calendar is currently allowed to run. Tasks without a calendar remain
+// eligible. Manual schedule releases are honored through schedule_manual_until.
+func (s *Server) proxyResumeInsideSchedule(taskID string, now time.Time) (bool, error) {
+	id, err := strconv.ParseInt(taskID, 10, 64)
+	if err != nil {
+		return false, err
+	}
+	items, err := s.m.pg.ListTaskSchedules()
+	if err != nil {
+		return false, err
+	}
+	attached := false
+	open := false
+	for _, item := range items {
+		for _, boundID := range item.TaskIDs {
+			if boundID != id {
+				continue
+			}
+			attached = true
+			if item.Enabled && item.Status != "completed" {
+				w := evaluateScheduleWindow(item, now)
+				open = open || w.active || item.LastWindowKey == "manual"
+			}
+			break
+		}
+	}
+	if !attached {
+		return true, nil
+	}
+	var manualUntil time.Time
+	if err := s.m.pg.QueryRow(`SELECT COALESCE(schedule_manual_until, 'epoch'::timestamptz) FROM tasks WHERE id=$1`, id).Scan(&manualUntil); err == nil && manualUntil.After(now) {
+		open = true
+	}
+	return open, nil
+}
+
 func (sc *Scheduler) fireTaskSchedules() {
 	sc.fireTaskSchedulesAt(time.Now())
 }
@@ -246,6 +283,15 @@ func (sc *Scheduler) fireTaskSchedulesAt(now time.Time) {
 			}
 			state := t.lifecycleSnapshot()
 			if db.IsTerminal(state.Status) {
+				continue
+			}
+			// A proxy-paused task can remain paused when a calendar window ends
+			// during reconnect. Convert it to a schedule pause so a later probe
+			// cannot resume work outside the configured window.
+			if !open[id] && state.Paused && state.PauseReason == "paused_by_proxy" {
+				if err := sc.s.m.ConvertProxyPauseToSchedule(strconv.FormatInt(id, 10)); err != nil {
+					errors = append(errors, fmt.Sprintf("任务 #%d: %s", id, err))
+				}
 				continue
 			}
 			action := ""

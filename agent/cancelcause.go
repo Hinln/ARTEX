@@ -28,6 +28,7 @@ func Causef(code, short, format string, args ...any) *AbortCause {
 var (
 	// Task-level execution context.
 	AbortPausedBySchedule = cause("paused_by_schedule", "计划窗口结束，暂停任务", "任务将在下一个计划窗口恢复，本次执行已停止")
+	AbortPausedByProxy    = cause("paused_by_proxy", "全局代理异常，暂停任务", "全局出口代理连接失败，任务已暂停；代理恢复后将自动继续")
 	AbortPausedByUser     = cause("paused_by_user", "用户暂停了任务",
 		"用户通过任务控制接口（POST /api/tasks/{id}/control，action=pause）暂停了任务。本次 Planner/Worker 运行被主动取消；运行中的意图会退回 frontier(open)，恢复任务后重新领取并从头执行")
 	AbortPausedByOrchestrator = cause("paused_by_orchestrator", "编排 Agent 暂停了任务",

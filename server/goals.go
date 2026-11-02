@@ -112,10 +112,30 @@ func (s *Server) admitTaskWhen(t *Task, mode string, requirePaused bool) (bool, 
 	return s.admitTaskWhenScheduled(t, mode, requirePaused, false)
 }
 func (s *Server) admitTaskWhenScheduled(t *Task, mode string, requirePaused, scheduled bool) (queued bool, err error) {
+	return s.admitTaskWhenScheduledWithReason(t, mode, requirePaused, scheduled, "", false)
+}
+
+// admitTaskWhenScheduledWithReason is the shared admission gate. A non-empty
+// requiredReason is checked after concMu is acquired, alongside the paused and
+// terminal checks, so proxy recovery cannot revive a task that was re-paused by
+// a user while the probe was in flight. preserveSchedule keeps calendar state
+// and never creates schedule_manual_until (used by proxy recovery).
+func (s *Server) admitTaskWhenScheduledWithReason(t *Task, mode string, requirePaused, scheduled bool, requiredReason string, preserveSchedule bool) (queued bool, err error) {
+	return s.admitTaskWhenScheduledWithGenerationChecked(t, mode, requirePaused, scheduled, requiredReason, preserveSchedule, 0, false)
+}
+
+// admitTaskWhenScheduledWithGeneration checks the supplied reconnect round.
+// Generation zero is valid; callers that do not have a round use the explicit
+// unchecked form through admitTaskWhenScheduledWithReason.
+func (s *Server) admitTaskWhenScheduledWithGeneration(t *Task, mode string, requirePaused, scheduled bool, requiredReason string, preserveSchedule bool, requiredGeneration uint64) (queued bool, err error) {
+	return s.admitTaskWhenScheduledWithGenerationChecked(t, mode, requirePaused, scheduled, requiredReason, preserveSchedule, requiredGeneration, true)
+}
+
+func (s *Server) admitTaskWhenScheduledWithGenerationChecked(t *Task, mode string, requirePaused, scheduled bool, requiredReason string, preserveSchedule bool, requiredGeneration uint64, checkGeneration bool) (queued bool, err error) {
 	if t == nil {
 		return false, fmt.Errorf("task not found")
 	}
-	manualSchedule := requirePaused && !scheduled
+	manualSchedule := requirePaused && !scheduled && !preserveSchedule
 	if manualSchedule {
 		// Match the calendar tick's lock order: scheduleMu before concMu. The
 		// override must commit before another tick can decide to pause this task.
@@ -154,6 +174,12 @@ func (s *Server) admitTaskWhenScheduled(t *Task, mode string, requirePaused, sch
 		}
 		if !lifecycle.Paused {
 			return false, fmt.Errorf("仅已暂停的任务可以继续")
+		}
+		if requiredReason != "" && lifecycle.PauseReason != requiredReason {
+			return false, fmt.Errorf("任务暂停原因已改变")
+		}
+		if requiredReason == "paused_by_proxy" && checkGeneration && lifecycle.ReconnectGeneration != requiredGeneration {
+			return false, fmt.Errorf("任务代理重连轮次已改变")
 		}
 		mode = s.resumeAdmissionMode(t)
 	}
@@ -212,7 +238,7 @@ func (s *Server) admitTaskWhenScheduled(t *Task, mode string, requirePaused, sch
 	if wasTerminal {
 		status = "running"
 	}
-	if err := s.m.applyTaskAdmission(t.ID, lifecycle.Status, status, shouldQueue, mode, wasQueued, manualUntil); err != nil {
+	if err := s.m.applyTaskAdmissionWithSchedule(t.ID, lifecycle.Status, status, shouldQueue, mode, wasQueued, manualUntil, preserveSchedule); err != nil {
 		if !engineWasPaused && !wasPaused && !wasQueued {
 			s.engine.Resume(t)
 		}

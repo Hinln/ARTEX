@@ -42,6 +42,8 @@ export interface Task {
   active_run_seconds?: number; // completed running segments in seconds
   run_segment_started_unix?: number; // current running segment start; 0 when inactive
   paused?: boolean;
+  pause_reason?: string;
+  reconnect?: { attempt: number; max: number; next_at?: number; exhausted: boolean; last_error?: string };
   queued?: boolean;
   active?: boolean;
   in_flight?: number;
@@ -1002,6 +1004,8 @@ export interface Settings {
   // 全局出口代理(http/https/socks5，可带 user:pass)，所有目标流量走它。开启流量捕获时作为
   // MITM 上游；关闭捕获时直接注入 agent 的 bash/WebFetch。空=直连。
   global_proxy?: string;
+  proxy_reconnect_max_attempts?: number;
+  proxy_reconnect_interval_seconds?: number;
   show_egress_ip?: boolean; // 在顶栏显示直连 / 全局代理出口 IP；默认关闭
   python_interpreter?: string; // 自定义脚本工具的 python 解释器路径(空=运行时检测)
   workers?: number; // 并发工作 agent 数(默认3)；对之后启动的任务生效

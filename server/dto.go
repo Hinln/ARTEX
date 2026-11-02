@@ -52,6 +52,8 @@ type TaskDTO struct {
 	ActiveRunSeconds   int64              `json:"active_run_seconds"`
 	RunSegmentStarted  int64              `json:"run_segment_started_unix"`
 	Paused             bool               `json:"paused"`
+	PauseReason        string             `json:"pause_reason,omitempty"`
+	Reconnect          *ProxyReconnectDTO `json:"reconnect,omitempty"`
 	Queued             bool               `json:"queued"`
 	Tokens             TokenTotalDTO      `json:"tokens"` // whole-task token consumption
 	GoalsTotal         int                `json:"goals_total"`
@@ -68,6 +70,14 @@ type TaskDTO struct {
 	CompanyIDs         []int64            `json:"company_ids"`
 	CoverageEnabled    bool               `json:"coverage_enabled"` // 资产覆盖度功能开关(创建时定)
 	WorkerCount        int                `json:"worker_count"`     // 本任务 Worker 数;0=用全局默认
+}
+
+type ProxyReconnectDTO struct {
+	Attempt   int    `json:"attempt"`
+	Max       int    `json:"max"`
+	NextAt    int64  `json:"next_at,omitempty"`
+	Exhausted bool   `json:"exhausted"`
+	LastError string `json:"last_error,omitempty"`
 }
 
 // FindingSeverityDTO 是任务列表里按严重度分档的漏洞计数（严重/高/中/低）。
@@ -118,25 +128,32 @@ func taskDTO(t *Task, status string) TaskDTO {
 	}
 	profileIDs := append(make([]int64, 0, len(llmState.ProfileIDs)), llmState.ProfileIDs...)
 	return TaskDTO{
-		ID:                 t.ID,
-		ExplorationID:      t.ExpID,
-		Name:               lifecycle.Name,
-		Remark:             lifecycle.Remark,
-		CategoryID:         lifecycle.CategoryID,
-		CategoryName:       lifecycle.CategoryName,
-		Pinned:             lifecycle.PinnedAt > 0,
-		PinnedAt:           completedRFC(lifecycle.PinnedAt),
-		Description:        t.Description,
-		Goal:               t.Goal,
-		Status:             status,
-		CreatedAt:          rfc3339(time.Unix(t.CreatedAt, 0)),
-		CreatedUnix:        t.CreatedAt,
-		RunSeconds:         runSeconds,
-		ActiveRunSeconds:   lifecycle.ActiveRunSeconds,
-		RunSegmentStarted:  lifecycle.RunSegmentStartedAt,
-		CompletedAt:        completedRFC(lifecycle.CompletedAt),
-		CompletedUnix:      lifecycle.CompletedAt,
-		Paused:             lifecycle.Paused,
+		ID:                t.ID,
+		ExplorationID:     t.ExpID,
+		Name:              lifecycle.Name,
+		Remark:            lifecycle.Remark,
+		CategoryID:        lifecycle.CategoryID,
+		CategoryName:      lifecycle.CategoryName,
+		Pinned:            lifecycle.PinnedAt > 0,
+		PinnedAt:          completedRFC(lifecycle.PinnedAt),
+		Description:       t.Description,
+		Goal:              t.Goal,
+		Status:            status,
+		CreatedAt:         rfc3339(time.Unix(t.CreatedAt, 0)),
+		CreatedUnix:       t.CreatedAt,
+		RunSeconds:        runSeconds,
+		ActiveRunSeconds:  lifecycle.ActiveRunSeconds,
+		RunSegmentStarted: lifecycle.RunSegmentStartedAt,
+		CompletedAt:       completedRFC(lifecycle.CompletedAt),
+		CompletedUnix:     lifecycle.CompletedAt,
+		Paused:            lifecycle.Paused,
+		PauseReason:       lifecycle.PauseReason,
+		Reconnect: func() *ProxyReconnectDTO {
+			if lifecycle.PauseReason != "paused_by_proxy" && lifecycle.ReconnectAttempt == 0 && !lifecycle.ReconnectExhausted {
+				return nil
+			}
+			return &ProxyReconnectDTO{Attempt: lifecycle.ReconnectAttempt, Max: lifecycle.ReconnectMax, NextAt: lifecycle.ReconnectNextAt, Exhausted: lifecycle.ReconnectExhausted, LastError: lifecycle.ReconnectLastError}
+		}(),
 		Queued:             lifecycle.Queued,
 		LLMProfileID:       llmState.ProfileID,
 		LLMProfileIDs:      profileIDs,

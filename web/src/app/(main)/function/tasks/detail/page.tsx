@@ -419,6 +419,14 @@ function TaskDetailInner() {
           </Button>
         </div>
         <p className="truncate text-xs text-muted-foreground">{task.goal}</p>
+        {task.paused && task.pause_reason && (
+          <div className="flex flex-wrap items-center gap-2 text-xs text-amber-600">
+            <span>暂停原因：{task.pause_reason === "paused_by_proxy" ? "全局代理异常" : task.pause_reason}</span>
+            {task.reconnect && <span>重连 {task.reconnect.attempt}/{task.reconnect.max} {task.reconnect.exhausted ? "已耗尽" : task.reconnect.next_at ? `下次 ${new Date(task.reconnect.next_at * 1000).toLocaleTimeString()}` : "探测中"}</span>}
+            {task.reconnect?.last_error && <span className="max-w-full truncate" title={task.reconnect.last_error}>原因：{task.reconnect.last_error}</span>}
+            {task.pause_reason === "paused_by_proxy" && <Button size="sm" variant="outline" onClick={() => api.testTaskProxy(task.id).then((r) => r.ok ? (toast.success("代理已恢复，任务将自动继续"), load()) : toast.error(r.error || "代理探测失败")).catch((e) => toast.error((e as Error).message))}>测试代理</Button>}
+          </div>
+        )}
         {task.remark ? (
           <p className="truncate text-xs text-muted-foreground" title={task.remark}>
             备注：{task.remark}

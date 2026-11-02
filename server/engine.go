@@ -153,8 +153,11 @@ type Engine struct {
 	slotPlans            sync.Map // task -> map[slot name]profile ID; immutable for a run
 	// readiness reports whether a global LLM provider is configured — the signal behind
 	// Ready()/the llm_configured indicator. Wired once at startup; nil → not ready.
-	readiness func() bool
+	readiness    func() bool
+	proxyFailure func(taskID string, err error)
 }
+
+func (e *Engine) SetProxyFailureHandler(fn func(string, error)) { e.proxyFailure = fn }
 
 type slotAvailability struct {
 	available bool
@@ -942,7 +945,12 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		}
 		e.stampFirstRun(t) // 首次真正规划 → 盖 first_run_at + 算 deadline(仅带 timeout 的任务)
 		e.touch(t.ID)
-		emit := func(r db.Activity) { e.emitActivity(t, r) }
+		emit := func(r db.Activity) {
+			if r.Kind == "tool_result" && r.IsError && e.proxyFailure != nil && isGlobalProxyDialFailure(errors.New(r.Detail+" "+r.Summary)) {
+				e.proxyFailure(t.ID, errors.New(r.Detail+" "+r.Summary))
+			}
+			e.emitActivity(t, r)
+		}
 		ectx := e.clockCtx(e.execContextFor(ctx, t.ID), t, false) // cancellable by Pause; 带任务 deadline
 		if ectx.Err() != nil || e.IsDeleting(t.ID) {
 			return
@@ -962,6 +970,9 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		switch {
 		case err != nil && ectx.Err() == nil:
 			log.Printf("[planner] task %s 规划出错: %v", t.ID, err)
+			if e.proxyFailure != nil && isProxyFailure(err) {
+				e.proxyFailure(t.ID, err)
+			}
 		case met:
 			log.Printf("[planner] task %s 判定目标达成: %s", t.ID, reason)
 			// 所有目标达成 → 持久化任务状态为 done（前端 DTO 会优先展示该终态）。
@@ -1081,7 +1092,12 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	hasChatMessage := message != ""
 	e.stampFirstRun(t) // 首次真正执行 → 盖 first_run_at + 算 deadline(仅带 timeout 的任务)
 	e.touch(t.ID)
-	emit := func(r db.Activity) { e.emitActivity(t, r) }
+	emit := func(r db.Activity) {
+		if r.Kind == "tool_result" && r.IsError && e.proxyFailure != nil && isGlobalProxyDialFailure(errors.New(r.Detail+" "+r.Summary)) {
+			e.proxyFailure(t.ID, errors.New(r.Detail+" "+r.Summary))
+		}
+		e.emitActivity(t, r)
+	}
 	ectx := e.clockCtx(e.execContextFor(ctx, t.ID), t, false) // cancellable by Pause; 带任务 deadline
 	if ectx.Err() != nil || e.IsDeleting(t.ID) {
 		if err := transitionIntentState(t.Store, intent.ID, "running", "open"); err != nil {
@@ -1123,6 +1139,9 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 		reason, wrote, err = worker.ExecuteWithMessage(workCtx, name, wTaskID, e.m.assets, t.Store, intent, hooks, emit, e.m.enrich, t.NotifyFinding, requestID, message)
 	} else {
 		reason, wrote, err = worker.Execute(workCtx, name, wTaskID, e.m.assets, t.Store, intent, hooks, emit, e.m.enrich, t.NotifyFinding)
+	}
+	if err != nil && e.proxyFailure != nil && isProxyFailure(err) {
+		e.proxyFailure(t.ID, err)
 	}
 	e.EndLLMCall(t.ID)
 	// model_error 收场 → 额外重跑几次（退避后再试）。仅在意图仍属本 work、任务
@@ -1338,7 +1357,7 @@ func taskExecutionPaused(cause error) bool {
 		return false
 	}
 	switch abort.Code {
-	case "paused_by_schedule", "paused_by_user", "paused_by_orchestrator", "paused_on_reload", "paused_race_guard",
+	case "paused_by_schedule", "paused_by_user", "paused_by_orchestrator", "paused_by_proxy", "paused_on_reload", "paused_race_guard",
 		"queued_for_admission", "llm_unavailable_queued", "task_deleted":
 		return true
 	default:

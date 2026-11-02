@@ -992,6 +992,7 @@ export const api = {
   // global_proxy 传空 = 测直连；probe_url 可覆盖默认探测地址（隔离网用）。
   testEgressProxy: (patch: { global_proxy?: string; probe_url?: string }) =>
     post<EgressReport>(`/settings/proxy/test`, patch),
+  testTaskProxy: (taskID: string) => post<{ ok: boolean; error?: string }>(`/tasks/${taskID}/proxy/test`, {}),
 
   // ---- 漏洞 IM 推送 ----
   // 渠道是多实例资源（同一类型可配多个机器人、各有过滤规则），因此独立成组，

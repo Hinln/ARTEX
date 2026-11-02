@@ -55,6 +55,8 @@ export default function SystemSettingsPage() {
   const [savingProxy, setSavingProxy] = React.useState(false);
   const [globalProxyInput, setGlobalProxyInput] = React.useState("");
   const [savingGlobalProxy, setSavingGlobalProxy] = React.useState(false);
+  const [proxyReconnectMax, setProxyReconnectMax] = React.useState("5");
+  const [proxyReconnectInterval, setProxyReconnectInterval] = React.useState("30");
   const [savingEgressVisibility, setSavingEgressVisibility] = React.useState(false);
   // 出口探测：测一次真实请求，拿到"直连 / 经全局代理"两条出口 IP。
   const [egressTesting, setEgressTesting] = React.useState(false);
@@ -111,6 +113,8 @@ export default function SystemSettingsPage() {
     setProxyInput(s.web_search_proxy ?? "");
     const savedProxy = s.global_proxy ?? "";
     setGlobalProxyInput(savedProxy);
+    setProxyReconnectMax(String(s.proxy_reconnect_max_attempts ?? 5));
+    setProxyReconnectInterval(String(s.proxy_reconnect_interval_seconds ?? 30));
     setPyInterp(s.python_interpreter ?? "");
     setWorkers(String(s.workers ?? 3));
     setWorkerPools(s.worker_pools ?? []);
@@ -426,6 +430,12 @@ export default function SystemSettingsPage() {
       })
       .catch((e) => toast.error("保存失败：" + (e as Error).message))
       .finally(() => setSavingGlobalProxy(false));
+  };
+
+  const saveProxyReconnect = () => {
+    api.setSettings({ proxy_reconnect_max_attempts: Number(proxyReconnectMax), proxy_reconnect_interval_seconds: Number(proxyReconnectInterval) })
+      .then((s) => { apply(s); toast.success("已保存代理重连策略"); })
+      .catch((e) => toast.error("保存失败：" + (e as Error).message));
   };
 
   // 测表单里当前的值，不要求先保存；后端返回直连 / 经代理两条。
@@ -751,12 +761,18 @@ export default function SystemSettingsPage() {
                   </Button>
                   {/* 测表单里当前的值，不要求先保存。 */}
                   <Button type="button" variant="outline" onClick={testEgress} disabled={!loaded || egressTesting}>
-                    {egressTesting ? "测试中…" : "测试"}
+                    {egressTesting ? "测试中…" : "测试代理"}
                   </Button>
                 </div>
                 <p className="text-muted-foreground text-xs">
                   {globalProxyInput.trim() ? "已配置 · 所有目标流量经此代理出网" : "未配置 · 目标流量直连出网"}
                 </p>
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-3 items-end">
+                  <div><Label htmlFor="proxy-reconnect-max">最大重连次数</Label><Input id="proxy-reconnect-max" type="number" min={1} value={proxyReconnectMax} onChange={(e) => setProxyReconnectMax(e.target.value)} /></div>
+                  <div><Label htmlFor="proxy-reconnect-interval">重连间隔（秒）</Label><Input id="proxy-reconnect-interval" type="number" min={1} value={proxyReconnectInterval} onChange={(e) => setProxyReconnectInterval(e.target.value)} /></div>
+                  <Button type="button" variant="outline" onClick={saveProxyReconnect}>保存重连策略</Button>
+                </div>
+                <p className="text-muted-foreground text-xs">代理异常暂停的任务会按此策略探测；次数耗尽后保持暂停，可手动恢复。</p>
                 <div className="flex items-center justify-between gap-4 rounded-md border px-3 py-2">
                   <div className="min-w-0">
                     <Label htmlFor="show-egress-ip" className="text-sm font-normal">

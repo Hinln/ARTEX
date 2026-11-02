@@ -513,6 +513,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     status         TEXT NOT NULL DEFAULT 'created'
                      CHECK (status IN ('created','running','paused','done','failed','timeout')),
     paused         BOOLEAN NOT NULL DEFAULT false,
+    pause_reason   TEXT NOT NULL DEFAULT '',
     queued         BOOLEAN NOT NULL DEFAULT false,
     queued_at      TIMESTAMPTZ,
     queue_mode     TEXT NOT NULL DEFAULT '',
@@ -566,6 +567,7 @@ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS llm_chain_revision BIGINT NOT NULL DE
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS active_run_seconds BIGINT NOT NULL DEFAULT 0;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS run_segment_started_at TIMESTAMPTZ;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS pause_reason TEXT NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS idx_tasks_category ON tasks(category_id, created_at DESC)
     WHERE deleted_at IS NULL AND category_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_tasks_pinned ON tasks(pinned_at DESC)
@@ -1084,6 +1086,7 @@ CREATE TABLE IF NOT EXISTS task_schedule_tasks (
 );
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS schedule_paused BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS schedule_manual_until TIMESTAMPTZ;
+UPDATE tasks SET pause_reason='paused_by_schedule' WHERE paused AND schedule_paused AND pause_reason='';
 CREATE INDEX IF NOT EXISTS idx_task_schedule_tasks_task ON task_schedule_tasks(task_id);
 ALTER TABLE task_schedule_tasks ADD COLUMN IF NOT EXISTS paused_by_schedule BOOLEAN NOT NULL DEFAULT false;
 
