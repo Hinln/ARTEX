@@ -227,7 +227,7 @@ func (m *Manager) persistProxyPoolLocked() error {
 
 func (m *Manager) ProxyPoolSnapshot() ([]ProxyPoolEntry, string, []ProxySwitchLog) {
 	if m.proxyPool == nil {
-		return nil, "", nil
+		return []ProxyPoolEntry{}, "", []ProxySwitchLog{}
 	}
 	m.proxyPool.mu.Lock()
 	defer m.proxyPool.mu.Unlock()
@@ -241,7 +241,7 @@ func (m *Manager) ProxyPoolSnapshot() ([]ProxyPoolEntry, string, []ProxySwitchLo
 		}
 		entries = append(entries, p)
 	}
-	logs := append([]ProxySwitchLog(nil), m.proxyPool.logs...)
+	logs := append([]ProxySwitchLog{}, m.proxyPool.logs...)
 	for i := range logs {
 		logs[i].From, logs[i].To = maskSecrets(logs[i].From), maskSecrets(logs[i].To)
 	}

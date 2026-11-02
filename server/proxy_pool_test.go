@@ -41,6 +41,35 @@ func TestProxyPoolSnapshotMasksCredentialsAndDisabledHealth(t *testing.T) {
 	}
 }
 
+func TestProxyPoolEmptyResponseUsesArrays(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		pool *proxyPoolState
+	}{
+		{name: "uninitialized"},
+		{name: "empty", pool: &proxyPoolState{}},
+		{name: "member without switches", pool: &proxyPoolState{entries: []proxyPoolEntry{{ProxyPoolEntry: ProxyPoolEntry{ID: "a"}, RawURL: "http://a"}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &Server{m: &Manager{proxyPool: tc.pool}}
+			w := httptest.NewRecorder()
+			s.getProxyPool(w, httptest.NewRequest(http.MethodGet, "/api/settings/proxy-pool", nil))
+			if w.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+			}
+			var payload map[string]json.RawMessage
+			if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
+				t.Fatal(err)
+			}
+			for _, field := range []string{"entries", "switch_log"} {
+				if raw := strings.TrimSpace(string(payload[field])); !strings.HasPrefix(raw, "[") {
+					t.Errorf("%s must be a JSON array, got %s", field, raw)
+				}
+			}
+		})
+	}
+}
+
 func TestProxyPoolSequentialSkipsUnhealthyAndDisabled(t *testing.T) {
 	m := &Manager{proxyPool: &proxyPoolState{active: "a", entries: []proxyPoolEntry{
 		{ProxyPoolEntry: ProxyPoolEntry{ID: "a", Enabled: true, Health: "healthy"}, RawURL: "http://a"},
