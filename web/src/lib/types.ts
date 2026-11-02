@@ -1004,6 +1004,16 @@ export interface Settings {
   // 全局出口代理(http/https/socks5，可带 user:pass)，所有目标流量走它。开启流量捕获时作为
   // MITM 上游；关闭捕获时直接注入 agent 的 bash/WebFetch。空=直连。
   global_proxy?: string;
+  proxy_pool?: ProxyPoolEntry[];
+  proxy_pool_active_id?: string;
+  proxy_pool_switch_log?: ProxySwitchLog[];
+  proxy_rotate_timed_enabled?: boolean;
+  proxy_rotate_interval_seconds?: number;
+  proxy_rotate_on_failure?: boolean;
+  proxy_rotate_strategy?: "sequential" | "random";
+  proxy_health_fail_threshold?: number;
+  proxy_health_cooldown_seconds?: number;
+  proxy_health_check_interval_seconds?: number;
   proxy_reconnect_max_attempts?: number;
   proxy_reconnect_interval_seconds?: number;
   show_egress_ip?: boolean; // 在顶栏显示直连 / 全局代理出口 IP；默认关闭
@@ -1030,6 +1040,22 @@ export interface Settings {
   notify_public_base_url?: string; // 漏洞详情回链的外部访问地址；空=消息不带回链
   notify_digest_interval_min?: number; // 汇总模式周期（分钟），默认 30
 }
+
+export interface ProxyPoolEntry {
+  id: string;
+  url: string;
+  name?: string;
+  remark?: string;
+  enabled: boolean;
+  egress_ip?: string;
+  latency_ms?: number;
+  last_error?: string;
+  last_checked_at?: string;
+  consecutive_failures: number;
+  health: "healthy" | "unhealthy-cooling" | "disabled" | string;
+}
+
+export interface ProxySwitchLog { at: string; from: string; to: string; reason: string }
 
 export interface WorkerPool {
   profile_id: string;

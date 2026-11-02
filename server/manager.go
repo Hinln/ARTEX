@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Autumn-27/artex/agent"
@@ -282,7 +283,10 @@ type Manager struct {
 	// (http/https/socks5, optional user:pass). Empty = direct. When traffic
 	// capture is on it becomes the MITM's upstream; when capture is off it is
 	// injected into agent bash env / WebFetch directly. See ProxyAddr.
-	globalProxy string
+	globalProxy         string
+	proxyPool           *proxyPoolState
+	forwardProxy        *dynamicForwardProxy
+	proxyPoolConfigured atomic.Bool
 }
 
 // SetTaskControlMutex lets lifecycle operations that originate in Manager
@@ -585,6 +589,14 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 		log.Printf("[llmusage] create table: %v", err)
 	}
 	m := &Manager{dir: dir, pg: pg, assets: pg.Assets(), tasks: map[string]*Task{}, interceptor: intercept.New(pg)}
+	if fp, ferr := newDynamicForwardProxy(func() string { return m.GlobalProxy() }); ferr == nil {
+		m.forwardProxy = fp
+		// An empty runtime route means direct egress, even when the persisted
+		// pool still contains disabled or blank entries.
+		fp.direct = func() bool { return strings.TrimSpace(m.GlobalProxy()) == "" }
+	} else {
+		log.Printf("[proxy] local forwarder disabled: %v", ferr)
+	}
 	if proxyAddr != "" {
 		tr, err := traffic.Open(filepath.Join(dir, "traffic"), proxyAddr)
 		if err != nil {
@@ -645,6 +657,7 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 	if v, ok, _ := pg.GetSetting(settingGlobalProxy); ok {
 		m.globalProxy = strings.TrimSpace(v)
 	}
+	m.initProxyPool()
 	if m.traffic != nil {
 		if err := m.traffic.SetUpstreamProxy(m.globalProxy); err != nil {
 			log.Printf("[proxy] 全局代理 %q 无效，已忽略: %v", m.globalProxy, err)
@@ -1019,8 +1032,12 @@ func (m *Manager) ProxyAddr() string {
 		return m.traffic.ProxyAddr()
 	}
 	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.globalProxy
+	global := m.globalProxy
+	m.mu.RUnlock()
+	if (global != "" || m.proxyPoolConfigured.Load()) && m.forwardProxy != nil {
+		return m.forwardProxy.Addr()
+	}
+	return maskSecrets(global)
 }
 
 // ProxyCACert returns the CA cert path agents must trust to verify HTTPS through
@@ -1050,7 +1067,30 @@ func (m *Manager) SetGlobalProxy(raw string) error {
 	raw = strings.TrimSpace(raw)
 	if raw != "" {
 		if _, err := traffic.ValidateProxyURL(raw); err != nil {
-			return err
+			return fmt.Errorf("%s", maskSecrets(err.Error()))
+		}
+	}
+	if m.proxyPool != nil {
+		m.proxyPool.mu.Lock()
+		managed := len(m.proxyPool.entries) > 0
+		if !managed && raw != "" {
+			m.proxyPool.entries = []proxyPoolEntry{{ProxyPoolEntry: ProxyPoolEntry{ID: "proxy-legacy", URL: maskSecrets(raw), Enabled: true, Health: "healthy"}, RawURL: raw}}
+			m.proxyPool.active = "proxy-legacy"
+			m.proxyPoolConfigured.Store(true)
+			if err := m.applyActiveProxyLocked("proxy-legacy", "manual"); err != nil {
+				m.proxyPool.entries = nil
+				m.proxyPool.active = ""
+				m.proxyPool.mu.Unlock()
+				return err
+			}
+			m.proxyPool.mu.Unlock()
+			return nil
+		}
+		m.proxyPool.mu.Unlock()
+		if managed {
+			// The legacy field is a read-only echo once a pool exists. Pool API
+			// operations are the sole authority for health, enablement and switching.
+			return nil
 		}
 	}
 	if err := m.pg.SetSetting(settingGlobalProxy, raw); err != nil {
@@ -1064,12 +1104,14 @@ func (m *Manager) SetGlobalProxy(raw string) error {
 			return err
 		}
 	}
-	// Keep the browser MCP's egress in sync with the new global proxy too.
 	m.syncBrowserMCPProxy()
 	return nil
 }
 
 func (m *Manager) Close() error {
+	if m.forwardProxy != nil {
+		_ = m.forwardProxy.Close()
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.traffic != nil {

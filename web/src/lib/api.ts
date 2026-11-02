@@ -34,6 +34,8 @@ import type {
   DeleteTaskResult,
   Edge,
   EgressReport,
+  ProxyPoolEntry,
+  ProxySwitchLog,
   EvidenceBodyPreview,
   ExplorationNodePage,
   ExplorationNodeQuery,
@@ -990,8 +992,15 @@ export const api = {
   }) => post<{ ok: boolean; error?: string; count?: number; backend?: string }>(`/settings/web-search/test`, patch),
 
   // global_proxy 传空 = 测直连；probe_url 可覆盖默认探测地址（隔离网用）。
-  testEgressProxy: (patch: { global_proxy?: string; probe_url?: string }) =>
+  testEgressProxy: (patch: { global_proxy?: string; probe_url?: string; resume?: boolean }) =>
     post<EgressReport>(`/settings/proxy/test`, patch),
+  proxyPool: () => get<{ entries: ProxyPoolEntry[]; active_id: string; active_proxy: string; switch_log: ProxySwitchLog[] }>(`/settings/proxy-pool`),
+  importProxyPool: (payload: Record<string, unknown>) => post<{ entries: ProxyPoolEntry[]; active_id: string; switch_log: ProxySwitchLog[]; errors: Array<{ line: number; input: string; error: string }> }>(`/settings/proxy-pool/import`, payload),
+  updateProxyPool: (id: string, payload: Partial<Pick<ProxyPoolEntry, "url" | "name" | "remark" | "enabled">>) => put<{ entry: ProxyPoolEntry }>(`/settings/proxy-pool/${encodeURIComponent(id)}`, payload),
+  deleteProxyPool: (id: string) => del<{ ok: boolean }>(`/settings/proxy-pool/${encodeURIComponent(id)}`),
+  testProxyPoolEntry: (id: string) => post<{ ok: boolean; result?: EgressReport["checks"][number]["result"] }>(`/settings/proxy-pool/${encodeURIComponent(id)}/test`, {}),
+  testAllProxyPool: () => post<{ entries: ProxyPoolEntry[]; active_id: string; switch_log: ProxySwitchLog[] }>(`/settings/proxy-pool/test-all`, {}),
+  activateProxyPool: (id: string) => post<{ ok: boolean; active_id: string; active_proxy: string }>(`/settings/proxy-pool/${encodeURIComponent(id)}/activate`, {}),
   testTaskProxy: (taskID: string) => post<{ ok: boolean; error?: string }>(`/tasks/${taskID}/proxy/test`, {}),
 
   // ---- 漏洞 IM 推送 ----

@@ -65,6 +65,10 @@ type proxyReconnectGuard struct {
 }
 
 func (s *Server) snapshotProxyReconnectGuards(checkAttempt bool) map[string]proxyReconnectGuard {
+	return s.snapshotProxyReconnectGuardsWithExhausted(checkAttempt, false)
+}
+
+func (s *Server) snapshotProxyReconnectGuardsWithExhausted(checkAttempt, includeExhausted bool) map[string]proxyReconnectGuard {
 	guards := make(map[string]proxyReconnectGuard)
 	if s == nil || s.m == nil {
 		return guards
@@ -72,6 +76,9 @@ func (s *Server) snapshotProxyReconnectGuards(checkAttempt bool) map[string]prox
 	for _, t := range s.m.List() {
 		st := t.lifecycleSnapshot()
 		if st.PauseReason != "paused_by_proxy" {
+			continue
+		}
+		if st.ReconnectExhausted && !includeExhausted {
 			continue
 		}
 		guards[t.ID] = proxyReconnectGuard{
@@ -135,7 +142,10 @@ func (s *Server) handleProxyFailure(taskID string, cause error) {
 	if strings.TrimSpace(s.m.GlobalProxy()) == "" {
 		return
 	}
-	if probe := probeEgress(context.Background(), s.m.GlobalProxy(), "", defaultEgressProbes, 10*time.Second); probe.OK {
+	if s.handleProxyPoolFailure(cause) {
+		return
+	}
+	if probe := s.runProxyProbe(s.ctx, s.m.GlobalProxy(), "", defaultEgressProbes, 10*time.Second); probe.OK {
 		return
 	}
 	s.pauseProxyTask(taskID, cause)
@@ -182,6 +192,9 @@ func (s *Server) pauseProxyTask(taskID string, cause error) {
 }
 
 func (s *Server) handleProxyTrafficFailure(cause error) {
+	if s.handleProxyPoolFailure(cause) {
+		return
+	}
 	if !isGlobalProxyDialFailure(cause) || strings.TrimSpace(s.m.GlobalProxy()) == "" {
 		return
 	}
@@ -200,6 +213,9 @@ func (s *Server) handleProxyTrafficFailure(cause error) {
 }
 
 func (s *Server) handleProxyToolFailure(ctx context.Context, cause error) {
+	if s.handleProxyPoolFailure(cause) {
+		return
+	}
 	if !isGlobalProxyDialFailure(cause) || strings.TrimSpace(s.m.GlobalProxy()) == "" {
 		return
 	}
@@ -215,7 +231,7 @@ func truncateProxyError(err error) string {
 	if err == nil {
 		return ""
 	}
-	s := err.Error()
+	s := maskSecrets(err.Error())
 	if len(s) > 240 {
 		return s[:240] + "…"
 	}
@@ -239,7 +255,20 @@ func (s *Server) runProxyReconnect(ctx context.Context) {
 
 func (s *Server) proxyReconnectTick() {
 	if strings.TrimSpace(s.m.GlobalProxy()) == "" {
+		// Clearing the runtime route is a successful direct transition. Reuse the
+		// generation gate so only eligible, non-exhausted proxy pauses resume.
+		s.proxyReconnectSuccess()
 		return
+	}
+	if s.m.proxyPool != nil && len(s.m.proxyPoolEntries()) > 0 {
+		// A pool tick may confirm the active route or switch to another available
+		// member. If it cannot confirm either, retain the original #106 per-task
+		// attempt/backoff/exhaustion loop (especially for a one-member legacy
+		// pool).
+		outcome := s.proxyPoolTick()
+		if outcome.confirmed || outcome.switched {
+			return
+		}
 	}
 	now := time.Now().Unix()
 	max, interval := s.proxyReconnectConfig()
@@ -396,7 +425,7 @@ func (s *Server) testTaskProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	proxy := strings.TrimSpace(s.m.GlobalProxy())
-	guards := s.snapshotProxyReconnectGuards(false)
+	guards := s.snapshotProxyReconnectGuardsWithExhausted(false, true)
 	if proxy == "" {
 		writeJSON(w, 200, map[string]any{"ok": true, "direct": true})
 		s.proxyReconnectSuccessWithGuards(guards, nil)

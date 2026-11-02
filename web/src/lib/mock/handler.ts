@@ -2406,6 +2406,12 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
       ],
       warnings: [],
     };
+  if (path === "/settings/proxy-pool" && m === "GET") return { entries: D.settings.proxy_pool ?? [], active_id: D.settings.proxy_pool_active_id ?? "", active_proxy: D.settings.global_proxy ?? "", switch_log: [] };
+  if (path === "/settings/proxy-pool/import" && m === "POST") return { entries: D.settings.proxy_pool ?? [], active_id: D.settings.proxy_pool_active_id ?? "", switch_log: [], errors: [] };
+  if (path === "/settings/proxy-pool/test-all" && m === "POST") return { entries: D.settings.proxy_pool ?? [], active_id: D.settings.proxy_pool_active_id ?? "", switch_log: [] };
+  if (path.startsWith("/settings/proxy-pool/") && m === "PUT") return { entry: { ...(D.settings.proxy_pool ?? []).find((x) => x.id === path.split("/").at(-1)), ...b } };
+  if (path.startsWith("/settings/proxy-pool/") && m === "DELETE") return { ok: true };
+  if (path.startsWith("/settings/proxy-pool/") && m === "POST") return { ok: true, active_id: path.split("/").at(-1), active_proxy: "" };
   if (path === "/settings/python/detect") return { python_interpreter: "/usr/bin/python3" };
   if (path === "/chat")
     return { reply: "（demo）我已把该建议注入为一条高优意图，work agent 会尽快执行。", mode: "hint" };

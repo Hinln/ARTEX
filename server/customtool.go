@@ -368,7 +368,7 @@ func (s *Server) runScriptTool(ctx context.Context, key string, execRaw json.Raw
 	}
 	body, err := execPython(ctx, interp, key, spec.Code, params, workDir, sessionEnv, timeoutOr(spec.TimeoutMs, 120000))
 	if err != nil {
-		return actool.Errorf(err.Error()), nil
+		return actool.Errorf(maskSecrets(err.Error())), nil
 	}
 	return actool.Text(actool.Capture(tc, body)), nil
 }
@@ -436,7 +436,7 @@ func (s *Server) runHTTPTool(ctx context.Context, execRaw json.RawMessage, param
 	defer cancel()
 	req, err := http.NewRequestWithContext(runCtx, method, rawURL, bodyReader)
 	if err != nil {
-		return actool.Errorf(err.Error()), nil
+		return actool.Errorf(maskSecrets(err.Error())), nil
 	}
 	for k, v := range spec.Headers {
 		req.Header.Set(k, renderTemplate(v, params, identity))
@@ -450,7 +450,7 @@ func (s *Server) runHTTPTool(ctx context.Context, execRaw json.RawMessage, param
 		if spec.UseRecordingProxy || strings.TrimSpace(spec.Proxy) == strings.TrimSpace(s.m.GlobalProxy()) {
 			s.handleProxyToolFailure(runCtx, err)
 		}
-		return actool.Errorf("请求失败: " + err.Error()), nil
+		return actool.Errorf("请求失败: " + maskSecrets(err.Error())), nil
 	}
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))

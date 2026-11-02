@@ -18,12 +18,13 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Field, FieldContent, FieldDescription, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { api } from "@/lib/api";
 import { CHAT_SEND_MODE_OPTIONS, type ChatSendMode, setChatSendMode, useChatSendMode } from "@/lib/chat-send-mode";
-import type { EgressReport, LLMProfile, Settings, WorkerPool } from "@/lib/types";
+import type { EgressReport, LLMProfile, ProxyPoolEntry, Settings, WorkerPool } from "@/lib/types";
 
 import { useEgressIp } from "../../_components/egress-ip-banner";
 import { BasicAuthCard } from "./_components/basic-auth-card";
@@ -55,6 +56,17 @@ export default function SystemSettingsPage() {
   const [savingProxy, setSavingProxy] = React.useState(false);
   const [globalProxyInput, setGlobalProxyInput] = React.useState("");
   const [savingGlobalProxy, setSavingGlobalProxy] = React.useState(false);
+  const [proxyPool, setProxyPool] = React.useState<ProxyPoolEntry[]>([]);
+  const [proxyPoolActiveId, setProxyPoolActiveId] = React.useState("");
+  const [proxyPoolText, setProxyPoolText] = React.useState("");
+  const [proxyPoolTimed, setProxyPoolTimed] = React.useState(false);
+  const [proxyPoolInterval, setProxyPoolInterval] = React.useState("30");
+  const [proxyPoolFailure, setProxyPoolFailure] = React.useState(false);
+  const [proxyPoolStrategy, setProxyPoolStrategy] = React.useState<"sequential" | "random">("sequential");
+  const [proxyPoolThreshold, setProxyPoolThreshold] = React.useState("3");
+  const [proxyPoolCooldown, setProxyPoolCooldown] = React.useState("60");
+  const [proxyPoolHealthInterval, setProxyPoolHealthInterval] = React.useState("30");
+  const [proxyPoolLogs, setProxyPoolLogs] = React.useState<Array<{ at: string; from: string; to: string; reason: string }>>([]);
   const [proxyReconnectMax, setProxyReconnectMax] = React.useState("5");
   const [proxyReconnectInterval, setProxyReconnectInterval] = React.useState("30");
   const [savingEgressVisibility, setSavingEgressVisibility] = React.useState(false);
@@ -113,6 +125,16 @@ export default function SystemSettingsPage() {
     setProxyInput(s.web_search_proxy ?? "");
     const savedProxy = s.global_proxy ?? "";
     setGlobalProxyInput(savedProxy);
+    setProxyPool(s.proxy_pool ?? []);
+    setProxyPoolActiveId(s.proxy_pool_active_id ?? "");
+    setProxyPoolTimed(!!s.proxy_rotate_timed_enabled);
+    setProxyPoolInterval(String(s.proxy_rotate_interval_seconds ?? 30));
+    setProxyPoolFailure(!!s.proxy_rotate_on_failure);
+    setProxyPoolStrategy(s.proxy_rotate_strategy === "random" ? "random" : "sequential");
+    setProxyPoolThreshold(String(s.proxy_health_fail_threshold ?? 3));
+    setProxyPoolCooldown(String(s.proxy_health_cooldown_seconds ?? 60));
+    setProxyPoolHealthInterval(String(s.proxy_health_check_interval_seconds ?? 30));
+    setProxyPoolLogs(s.proxy_pool_switch_log ?? []);
     setProxyReconnectMax(String(s.proxy_reconnect_max_attempts ?? 5));
     setProxyReconnectInterval(String(s.proxy_reconnect_interval_seconds ?? 30));
     setPyInterp(s.python_interpreter ?? "");
@@ -205,6 +227,11 @@ export default function SystemSettingsPage() {
       .then((s) => {
         apply(s);
         setSettingsLoaded(true);
+        void api.proxyPool().then((pool) => {
+          setProxyPool(pool.entries);
+          setProxyPoolActiveId(pool.active_id);
+          setProxyPoolLogs(pool.switch_log);
+        }).catch(() => undefined);
       })
       .catch(() => {
         setSettingsLoaded(false);
@@ -418,6 +445,10 @@ export default function SystemSettingsPage() {
   };
 
   const saveGlobalProxy = () => {
+    if (proxyPool.length > 0) {
+      toast.info("代理池非空时，全局代理输入框仅用于回显，请在代理池中编辑或切换");
+      return;
+    }
     setSavingGlobalProxy(true);
     api
       .setSettings({ global_proxy: globalProxyInput.trim() })
@@ -431,6 +462,23 @@ export default function SystemSettingsPage() {
       .catch((e) => toast.error("保存失败：" + (e as Error).message))
       .finally(() => setSavingGlobalProxy(false));
   };
+
+  const importProxyPool = () => {
+    api.importProxyPool({ text: proxyPoolText }).then((r) => { setProxyPool(r.entries); setProxyPoolActiveId(r.active_id); setProxyPoolLogs(r.switch_log); setProxyPoolText(""); if (r.errors.length) toast.error(r.errors.map((e) => `第${e.line}行：${e.error}`).join("；")); else toast.success("代理池已导入"); }).catch((e) => toast.error("导入失败：" + (e as Error).message));
+  };
+  const saveProxyPoolStrategy = () => {
+    const interval = Number(proxyPoolInterval);
+    if (!Number.isFinite(interval) || !Number.isInteger(interval) || interval < 3) {
+      toast.error("定时轮换间隔必须是大于等于 3 秒的整数");
+      return;
+    }
+    api.setSettings({ proxy_rotate_timed_enabled: proxyPoolTimed, proxy_rotate_interval_seconds: Number(proxyPoolInterval), proxy_rotate_on_failure: proxyPoolFailure, proxy_rotate_strategy: proxyPoolStrategy, proxy_health_fail_threshold: Number(proxyPoolThreshold), proxy_health_cooldown_seconds: Number(proxyPoolCooldown), proxy_health_check_interval_seconds: Number(proxyPoolHealthInterval) }).then((s) => { apply(s); toast.success("代理池轮换策略已保存"); }).catch((e) => toast.error("保存失败：" + (e as Error).message));
+  };
+  const testAllProxyPool = () => api.testAllProxyPool().then((r) => { setProxyPool(r.entries); setProxyPoolActiveId(r.active_id); setProxyPoolLogs(r.switch_log); toast.success("已完成全部代理探测"); }).catch((e) => toast.error("探测失败：" + (e as Error).message));
+  const testOneProxyPool = (id: string) => api.testProxyPoolEntry(id).then(() => api.proxyPool()).then((r) => { setProxyPool(r.entries); setProxyPoolActiveId(r.active_id); setProxyPoolLogs(r.switch_log); }).catch((e) => toast.error("探测失败：" + (e as Error).message));
+  const refreshProxyPool = () => api.proxyPool().then((r) => { setProxyPool(r.entries); setProxyPoolActiveId(r.active_id); setProxyPoolLogs(r.switch_log); });
+  const toggleProxyPoolEntry = (entry: ProxyPoolEntry) => api.updateProxyPool(entry.id, { enabled: !entry.enabled }).then(() => refreshProxyPool()).catch((e) => toast.error("更新失败：" + (e as Error).message));
+  const deleteProxyPoolEntry = (id: string) => api.deleteProxyPool(id).then(() => refreshProxyPool()).catch((e) => toast.error("删除失败：" + (e as Error).message));
 
   const saveProxyReconnect = () => {
     api.setSettings({ proxy_reconnect_max_attempts: Number(proxyReconnectMax), proxy_reconnect_interval_seconds: Number(proxyReconnectInterval) })
@@ -446,6 +494,7 @@ export default function SystemSettingsPage() {
     api
       .testEgressProxy({
         global_proxy: globalProxyInput.trim(),
+        resume: true,
 
         ...(egressProbeUrl.trim() ? { probe_url: egressProbeUrl.trim() } : {}),
       })
@@ -879,6 +928,40 @@ export default function SystemSettingsPage() {
                     ))}
                   </div>
                 )}
+                <div className="mt-3 rounded-md border p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <p className="text-sm font-medium">代理池</p>
+                      <p className="text-muted-foreground text-xs">当前在用：{proxyPool.find((entry) => entry.id === proxyPoolActiveId)?.name ?? (proxyPoolActiveId ? "已选择代理" : "直连")} · 每行一个代理；可用 URL|名称|备注。账号密码只会以掩码返回。</p>
+                    </div>
+                    <Button type="button" variant="outline" size="sm" onClick={testAllProxyPool}>测试全部</Button>
+                  </div>
+                  <Textarea className="mt-2 font-mono text-xs" rows={3} placeholder="http://user:pass@host:8080|香港 1|备用" value={proxyPoolText} onChange={(e) => setProxyPoolText(e.target.value)} />
+                  <div className="mt-2 flex flex-wrap gap-2"><Button type="button" size="sm" onClick={importProxyPool} disabled={!proxyPoolText.trim()}>批量导入</Button></div>
+                  <div className="mt-3 space-y-2">
+                    {proxyPool.length === 0 ? <p className="text-muted-foreground text-xs">暂无代理池条目；单代理仍由上面的全局代理输入框兼容。</p> : proxyPool.map((entry) => (
+                      <div key={entry.id} className="flex flex-wrap items-center gap-2 rounded border px-2 py-2 text-xs">
+                        <Switch checked={entry.enabled} onCheckedChange={() => toggleProxyPoolEntry(entry)} aria-label="启用代理" />
+                        <span className="min-w-0 flex-1 font-mono">{entry.name ? `${entry.name} · ` : ""}{entry.url}{entry.id === proxyPoolActiveId ? " · 当前" : ""}</span>
+                        <span className={entry.health === "healthy" ? "text-emerald-600" : entry.health === "disabled" ? "text-muted-foreground" : "text-amber-600"}>{entry.enabled ? entry.health : "disabled"}</span>
+                        <span className="text-muted-foreground">{entry.egress_ip ?? "—"} · {entry.latency_ms ?? "—"}ms · 失败 {entry.consecutive_failures}{entry.last_error ? ` · ${entry.last_error}` : ""}</span>
+                        <Button type="button" variant="ghost" size="sm" onClick={() => testOneProxyPool(entry.id)}>测试</Button>
+                        <Button type="button" variant="ghost" size="sm" onClick={() => deleteProxyPoolEntry(entry.id)}>删除</Button>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
+                    <div className="flex items-center justify-between gap-2 rounded border px-2 py-2"><Label htmlFor="proxy-pool-timed">定时轮换</Label><Switch id="proxy-pool-timed" checked={proxyPoolTimed} onCheckedChange={setProxyPoolTimed} /></div>
+                    <div><Label htmlFor="proxy-pool-interval">间隔（秒，≥3）</Label><Input id="proxy-pool-interval" type="number" min={3} value={proxyPoolInterval} onChange={(e) => setProxyPoolInterval(e.target.value)} /></div>
+                    <div className="flex items-center justify-between gap-2 rounded border px-2 py-2"><Label htmlFor="proxy-pool-failure">失效轮换</Label><Switch id="proxy-pool-failure" checked={proxyPoolFailure} onCheckedChange={setProxyPoolFailure} /></div>
+                    <div><Label>策略</Label><Select value={proxyPoolStrategy} onValueChange={(v) => setProxyPoolStrategy(v as "sequential" | "random")}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="sequential">顺序</SelectItem><SelectItem value="random">随机</SelectItem></SelectContent></Select></div>
+                    <div><Label htmlFor="proxy-pool-threshold">失败阈值</Label><Input id="proxy-pool-threshold" type="number" min={1} value={proxyPoolThreshold} onChange={(e) => setProxyPoolThreshold(e.target.value)} /></div>
+                    <div><Label htmlFor="proxy-pool-cooldown">冷却（秒）</Label><Input id="proxy-pool-cooldown" type="number" min={1} value={proxyPoolCooldown} onChange={(e) => setProxyPoolCooldown(e.target.value)} /></div>
+                    <div><Label htmlFor="proxy-pool-health-interval">健康检查（秒）</Label><Input id="proxy-pool-health-interval" type="number" min={1} value={proxyPoolHealthInterval} onChange={(e) => setProxyPoolHealthInterval(e.target.value)} /></div>
+                    <Button type="button" variant="outline" onClick={saveProxyPoolStrategy}>保存轮换策略</Button>
+                  </div>
+                  {proxyPoolLogs.length > 0 && <div className="mt-3 text-xs"><p className="font-medium">最近切换</p>{proxyPoolLogs.slice(-5).reverse().map((log) => <p key={`${log.at}-${log.to}`} className="text-muted-foreground">{new Date(log.at).toLocaleTimeString()} · {log.from || "直连"} → {log.to || "直连"} · {log.reason}</p>)}</div>}
+                </div>
               </CardContent>
             </Card>
 

@@ -126,10 +126,14 @@ type Server struct {
 
 	// Cold task archives run through one persistent FIFO worker. The buffered wake
 	// channel coalesces enqueue bursts; the database remains the source of truth.
-	archiveWake    chan struct{}
-	archiveWG      sync.WaitGroup
-	credentialWake chan struct{}
-	proxyReconnect proxyReconnectSupervisor
+	archiveWake       chan struct{}
+	archiveWG         sync.WaitGroup
+	credentialWake    chan struct{}
+	proxyReconnect    proxyReconnectSupervisor
+	proxyPoolWake     chan struct{}
+	proxyPoolWG       sync.WaitGroup
+	proxyPoolProbeSem chan struct{}
+	proxyPoolTickMu   sync.Mutex
 	// proxyProbe is injectable for deterministic reconnect race tests. Production
 	// servers leave it nil and use probeEgress directly.
 	proxyProbe func(context.Context, string, string, []string, time.Duration) egressProbeResult
@@ -167,7 +171,7 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 	}
 	s := &Server{m: m, engine: NewEngine(m), ctx: ctx, skillDir: skillDir, dataDir: dataDir, jwtKey: key, chatBusy: map[string]bool{},
 		chatCancel: map[string]context.CancelCauseFunc{}, triggerQ: map[string][]triggeredRun{},
-		triggerActive: map[string]int{}, triggerCfg: map[string]triggerBehavior{},
+		triggerActive: map[string]int{}, triggerCfg: map[string]triggerBehavior{}, proxyPoolWake: make(chan struct{}, 1), proxyPoolProbeSem: make(chan struct{}, proxyPoolMaxProbeConcurrency),
 		profChatAgents: map[int64]*agent.ChatAgent{},
 		provByProfile:  map[int64]*provEntry{}, llmHealth: newLLMHealthRegistry(m.pg),
 		taskAgents: map[string]*taskAgentBundle{}, archiveWake: make(chan struct{}, 1), credentialWake: make(chan struct{}, 1)}
@@ -294,6 +298,8 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 	}
 	s.restoreTaskRuntimes()
 	s.ensureProxySupervisor()
+	s.proxyPoolWG.Add(1)
+	go func() { defer s.proxyPoolWG.Done(); s.runProxyPoolSupervisor(s.ctx) }()
 	go s.reconcileConcurrency()
 	s.startTaskArchiveWorker()
 	if m.pg != nil {
@@ -308,6 +314,13 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 	}
 	s.wireInterceptReviewer() // LLM 兜底审批:未命中拦截规则的命令交给模型判定
 	return s
+}
+
+// Close waits for proxy pool supervision to stop before Manager closes the DB.
+func (s *Server) Close() {
+	if s != nil {
+		s.proxyPoolWG.Wait()
+	}
 }
 
 // Restored deadline and worker loops must inherit the same context as new tasks,
@@ -533,6 +546,7 @@ func (s *Server) applyLLM(cfg agent.Config) error {
 	// (backend/key) and gates Enabled per-conversation-agent at Chat time. 对话始终用激活配置。
 	s.chatAgent = agent.NewChatAgent(prov, cfg.Model, s.m.dir, tx, win) // chat page runner
 	s.chatAgent.SetProxy(s.m.ProxyAddr(), s.m.ProxyCACert())
+	s.chatAgent.SetProxyProvider(s.m.ProxyAddr)
 	s.chatAgent.SetWebSearch(s.m.WebSearchOpts())
 	s.chatAgent.SetGuard(s.chatGuard())
 	s.chatAgent.SetNonStreaming(nonStreamingResolver(cfg))
@@ -736,6 +750,7 @@ func (s *Server) chatAgentForProfile(id int64) *agent.ChatAgent {
 	tx := transcript.NewStore(filepath.Join(s.m.dir, "transcripts"))
 	ca := agent.NewChatAgent(s.poolForBinding(id, prov, cfg), cfg.Model, s.m.dir, tx, cfg.CompactionWindow())
 	ca.SetProxy(s.m.ProxyAddr(), s.m.ProxyCACert())
+	ca.SetProxyProvider(s.m.ProxyAddr)
 	ca.SetWebSearch(s.m.WebSearchOpts())
 	ca.SetGuard(s.chatGuard())
 	ca.SetNonStreaming(nonStreamingResolver(cfg))
@@ -992,6 +1007,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/settings/web-search/test", s.testWebSearch)
 	// 出口代理连通性测试：发真实请求验证 global_proxy 是否可用，并回显出口 IP。
 	mux.HandleFunc("POST /api/settings/proxy/test", s.testEgressProxy)
+	mux.HandleFunc("GET /api/settings/proxy-pool", s.getProxyPool)
+	mux.HandleFunc("POST /api/settings/proxy-pool/import", s.importProxyPool)
+	mux.HandleFunc("PUT /api/settings/proxy-pool/{id}", s.updateProxyPool)
+	mux.HandleFunc("DELETE /api/settings/proxy-pool/{id}", s.deleteProxyPool)
+	mux.HandleFunc("POST /api/settings/proxy-pool/{id}/test", s.testProxyPoolEntry)
+	mux.HandleFunc("POST /api/settings/proxy-pool/test-all", s.testAllProxyPool)
+	mux.HandleFunc("POST /api/settings/proxy-pool/{id}/activate", s.activateProxyPool)
 	mux.HandleFunc("POST /api/tasks/{id}/proxy/test", s.testTaskProxy)
 	mux.HandleFunc("GET /api/report", s.getReport)
 	mux.HandleFunc("GET /api/chat/mentions", s.searchChatMentions)
@@ -3646,16 +3668,32 @@ func (s *Server) settingsPayload() map[string]any {
 		"web_search_backend":                   backend,
 		"brave_key_set":                        strings.TrimSpace(braveKey) != "",
 		"tavily_key_set":                       strings.TrimSpace(tavilyKey) != "",
-		"web_search_proxy":                     proxy,             // 独立出口代理(http/https/socks5)，空=直连
-		"global_proxy":                         s.m.GlobalProxy(), // 全局出口代理(http/https/socks5)，所有目标流量走它，空=直连
-		"proxy_reconnect_max_attempts":         func() int { n, _ := s.proxyReconnectConfig(); return n }(),
-		"proxy_reconnect_interval_seconds":     func() int { _, d := s.proxyReconnectConfig(); return int(d / time.Second) }(),
-		"show_egress_ip":                       s.m.pg.GetBool(settingShowEgressIP, false),
-		"python_interpreter":                   strings.TrimSpace(pyStored), // 用户/自动设的值(空=用运行时检测)
-		"workers":                              s.m.Workers(),               // 并发工作 agent 数(默认3)；对之后启动的任务生效
-		"worker_pools":                         s.m.WorkerPools(),           // 非空时按池顺序绑定 worker 会话
-		"task_concurrency_enabled":             concOn,                      // 任务并发上限开关(默认关)
-		"task_concurrency_limit":               concLimit,                   // 同时运行任务上限(开启后默认5)
+		"web_search_proxy":                     maskSecrets(proxy),             // 独立出口代理(http/https/socks5)，空=直连
+		"global_proxy":                         maskSecrets(s.m.GlobalProxy()), // 全局出口代理(http/https/socks5)，所有目标流量走它，空=直连
+		"proxy_pool":                           func() []ProxyPoolEntry { e, _, _ := s.m.ProxyPoolSnapshot(); return e }(),
+		"proxy_pool_active_id":                 func() string { _, a, _ := s.m.ProxyPoolSnapshot(); return a }(),
+		"proxy_pool_switch_log":                func() []ProxySwitchLog { _, _, l := s.m.ProxyPoolSnapshot(); return l }(),
+		"proxy_rotate_timed_enabled":           s.m.pg.GetBool(settingProxyRotateTimed, false),
+		"proxy_rotate_interval_seconds":        proxyIntSetting(s.m.pg, settingProxyRotateInterval, defaultProxyRotateInterval),
+		"proxy_rotate_on_failure":              s.m.pg.GetBool(settingProxyRotateFailure, false),
+		"proxy_rotate_strategy": func() string {
+			v, ok, _ := s.m.pg.GetSetting(settingProxyRotateStrategy)
+			if ok && (v == "random" || v == "sequential") {
+				return v
+			}
+			return "sequential"
+		}(),
+		"proxy_health_fail_threshold":         proxyIntSetting(s.m.pg, settingProxyHealthThreshold, defaultProxyHealthThreshold),
+		"proxy_health_cooldown_seconds":       proxyIntSetting(s.m.pg, settingProxyHealthCooldown, defaultProxyHealthCooldown),
+		"proxy_health_check_interval_seconds": proxyIntSetting(s.m.pg, settingProxyHealthInterval, defaultProxyHealthInterval),
+		"proxy_reconnect_max_attempts":        func() int { n, _ := s.proxyReconnectConfig(); return n }(),
+		"proxy_reconnect_interval_seconds":    func() int { _, d := s.proxyReconnectConfig(); return int(d / time.Second) }(),
+		"show_egress_ip":                      s.m.pg.GetBool(settingShowEgressIP, false),
+		"python_interpreter":                  strings.TrimSpace(pyStored), // 用户/自动设的值(空=用运行时检测)
+		"workers":                             s.m.Workers(),               // 并发工作 agent 数(默认3)；对之后启动的任务生效
+		"worker_pools":                        s.m.WorkerPools(),           // 非空时按池顺序绑定 worker 会话
+		"task_concurrency_enabled":            concOn,                      // 任务并发上限开关(默认关)
+		"task_concurrency_limit":              concLimit,                   // 同时运行任务上限(开启后默认5)
 		// LLM 轮询(故障转移)。默认关；开启后走全局激活配置的 agent 在当前配置不可用时
 		// 自动切到下一个配置。bind_fallback 仅在轮询开启时有意义(默认关)。
 		"llm_pool_enabled":       s.m.LLMPoolEnabled(),
@@ -3732,6 +3770,13 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		TavilyKey              *string       `json:"tavily_search_api_key"`
 		WebSearchProxy         *string       `json:"web_search_proxy"` // 独立出口代理(http/https/socks5)；null=不改，""=清空
 		GlobalProxy            *string       `json:"global_proxy"`     // 全局出口代理(http/https/socks5)；null=不改，""=清空(直连)
+		ProxyRotateTimed       *bool         `json:"proxy_rotate_timed_enabled"`
+		ProxyRotateInterval    *int          `json:"proxy_rotate_interval_seconds"`
+		ProxyRotateFailure     *bool         `json:"proxy_rotate_on_failure"`
+		ProxyRotateStrategy    *string       `json:"proxy_rotate_strategy"`
+		ProxyHealthThreshold   *int          `json:"proxy_health_fail_threshold"`
+		ProxyHealthCooldown    *int          `json:"proxy_health_cooldown_seconds"`
+		ProxyHealthInterval    *int          `json:"proxy_health_check_interval_seconds"`
 		ProxyReconnectMax      *int          `json:"proxy_reconnect_max_attempts"`
 		ProxyReconnectInterval *int          `json:"proxy_reconnect_interval_seconds"`
 		ShowEgressIP           *bool         `json:"show_egress_ip"`     // 在顶栏显示直连/全局代理出口 IP；默认关
@@ -3948,17 +3993,20 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		changed = true
 	}
 	if req.GlobalProxy != nil {
+		globalProxyValue := strings.TrimSpace(*req.GlobalProxy)
+		if strings.Contains(globalProxyValue, "***") || strings.Contains(globalProxyValue, "******") {
+			globalProxyValue = s.m.GlobalProxy()
+		}
 		var proxyGuards map[string]proxyReconnectGuard
-		if strings.TrimSpace(*req.GlobalProxy) == "" {
+		if globalProxyValue == "" {
 			proxyGuards = s.snapshotProxyReconnectGuards(false)
 		}
 		// Validation failure (bad scheme/host) is a client error, not a 500.
-		if err := s.m.SetGlobalProxy(*req.GlobalProxy); err != nil {
+		if err := s.m.SetGlobalProxy(globalProxyValue); err != nil {
 			writeErr(w, 400, err.Error())
 			return
 		}
-		changed = true // capture-off egress is baked into agents at build time → rebuild
-		if strings.TrimSpace(*req.GlobalProxy) == "" {
+		if globalProxyValue == "" && (s.m.proxyPool == nil || len(s.m.proxyPoolEntries()) == 0) {
 			s.proxyReconnectSuccessWithGuards(proxyGuards, nil)
 		}
 	}
@@ -3966,6 +4014,39 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		if err := s.setProxyReconnectSettings(req.ProxyReconnectMax, req.ProxyReconnectInterval); err != nil {
 			writeErr(w, 400, err.Error())
 			return
+		}
+	}
+	if req.ProxyRotateTimed != nil || req.ProxyRotateInterval != nil || req.ProxyRotateFailure != nil || req.ProxyRotateStrategy != nil || req.ProxyHealthThreshold != nil || req.ProxyHealthCooldown != nil || req.ProxyHealthInterval != nil {
+		timed, interval, onFailure, strategy := s.m.proxyRotateConfig()
+		threshold, cooldown, healthInterval := s.m.proxyHealthConfig()
+		if req.ProxyRotateTimed != nil {
+			timed = *req.ProxyRotateTimed
+		}
+		if req.ProxyRotateInterval != nil {
+			interval = time.Duration(*req.ProxyRotateInterval) * time.Second
+		}
+		if req.ProxyRotateFailure != nil {
+			onFailure = *req.ProxyRotateFailure
+		}
+		if req.ProxyRotateStrategy != nil {
+			strategy = strings.TrimSpace(*req.ProxyRotateStrategy)
+		}
+		if req.ProxyHealthThreshold != nil {
+			threshold = *req.ProxyHealthThreshold
+		}
+		if req.ProxyHealthCooldown != nil {
+			cooldown = time.Duration(*req.ProxyHealthCooldown) * time.Second
+		}
+		if req.ProxyHealthInterval != nil {
+			healthInterval = time.Duration(*req.ProxyHealthInterval) * time.Second
+		}
+		if err := s.m.SetProxyPoolSettings(timed, int(interval/time.Second), onFailure, strategy, threshold, int(cooldown/time.Second), int(healthInterval/time.Second)); err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
+		select {
+		case s.proxyPoolWake <- struct{}{}:
+		default:
 		}
 	}
 	if req.ShowEgressIP != nil {
@@ -3982,6 +4063,10 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.WebSearchBackend != nil {
 			backend = *req.WebSearchBackend
+		}
+		if req.WebSearchProxy != nil && (strings.Contains(*req.WebSearchProxy, "***") || strings.Contains(*req.WebSearchProxy, "******")) {
+			_, _, _, _, savedSearchProxy := s.m.WebSearch()
+			req.WebSearchProxy = &savedSearchProxy
 		}
 		if err := s.m.SetWebSearch(on, backend, req.BraveKey, req.TavilyKey, req.WebSearchProxy); err != nil {
 			writeErr(w, 500, err.Error())
