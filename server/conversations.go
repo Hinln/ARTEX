@@ -103,6 +103,10 @@ func (s *Server) pgCreateConversation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.LLMProfileID != nil {
+		if p, err := pg.ProfileByID(*req.LLMProfileID); err == nil && p != nil && p.Format == "jev" {
+			writeErr(w, 400, db.ErrJevProfileJudgeOnly.Error())
+			return
+		}
 		if _, ok := s.loadProfileConfig(*req.LLMProfileID); !ok {
 			writeErr(w, 400, "指定的 LLM 配置不存在或未设置 API Key")
 			return
@@ -136,6 +140,10 @@ func (s *Server) pgUpdateConversation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.LLMProfileID != nil {
+		if p, err := pg.ProfileByID(*req.LLMProfileID); err == nil && p != nil && p.Format == "jev" {
+			writeErr(w, 400, db.ErrJevProfileJudgeOnly.Error())
+			return
+		}
 		if _, ok := s.loadProfileConfig(*req.LLMProfileID); !ok {
 			writeErr(w, 400, "指定的 LLM 配置不存在或未设置 API Key")
 			return

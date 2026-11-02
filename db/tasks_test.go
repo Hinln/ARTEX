@@ -8,6 +8,30 @@ import (
 	"time"
 )
 
+func TestJevProfileCannotBindTaskChain(t *testing.T) {
+	d, err := Open(testDSN(t))
+	if err != nil {
+		t.Skipf("postgres unavailable (%v) — skipping", err)
+	}
+	defer d.Close()
+	id, err := d.SaveProfile(&LLMProfile{Name: fmt.Sprintf("jev-task-%d", time.Now().UnixNano()), Format: "jev", Model: "jev-latest", APIKey: "test-key"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.DeleteProfile(id) })
+	if _, err := d.CreateTaskWithOptions("jev task", "must reject", TaskCreateOptions{LLMProfileIDs: []int64{id}}); !errors.Is(err, ErrJevProfileJudgeOnly) {
+		t.Fatalf("CreateTaskWithOptions Jev error=%v, want %v", err, ErrJevProfileJudgeOnly)
+	}
+	task, err := d.CreateTask("jev replace", "must reject", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.DeleteTask(task.ID) })
+	if err := d.ReplaceTaskLLMProfiles(task.ID, []int64{id}, id); !errors.Is(err, ErrJevProfileJudgeOnly) {
+		t.Fatalf("ReplaceTaskLLMProfiles Jev error=%v, want %v", err, ErrJevProfileJudgeOnly)
+	}
+}
+
 func TestTaskLifecycleAndDeleteCascade(t *testing.T) {
 	d, err := Open(testDSN(t))
 	if err != nil {

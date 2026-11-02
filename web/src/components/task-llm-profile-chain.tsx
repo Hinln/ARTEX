@@ -53,9 +53,10 @@ export function TaskLLMProfileChain({
   inputId,
   portalContainer,
 }: TaskLLMProfileChainProps) {
-  const profilesByID = React.useMemo(() => new Map(profiles.map((profile) => [profile.id, profile])), [profiles]);
-  const itemIDs = React.useMemo(() => profiles.map((profile) => profile.id), [profiles]);
-  const profilesUnavailable = profiles.length === 0;
+  const chatProfiles = React.useMemo(() => profiles.filter((profile) => profile.format !== "jev"), [profiles]);
+  const profilesByID = React.useMemo(() => new Map(chatProfiles.map((profile) => [profile.id, profile])), [chatProfiles]);
+  const itemIDs = React.useMemo(() => chatProfiles.map((profile) => profile.id), [chatProfiles]);
+  const profilesUnavailable = chatProfiles.length === 0;
   const currentProfileID = activeProfileId && value.includes(activeProfileId) ? activeProfileId : value[0];
   const currentIndex = value.indexOf(currentProfileID);
   // api_key_hint is display-only and is empty for valid keys shorter than four

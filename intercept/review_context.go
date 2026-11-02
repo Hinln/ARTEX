@@ -44,6 +44,7 @@ type ReviewInput struct {
 	Scripts             []ReviewScript    `json:"script_files,omitempty"`
 	Tool                string            `json:"tool_name"`
 	Arguments           json.RawMessage   `json:"arguments"`
+	EvidenceTruncated   bool              `json:"evidence_truncated,omitempty"`
 }
 
 type reviewContextKey struct{}

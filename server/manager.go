@@ -477,6 +477,9 @@ func (m *Manager) SetWorkerPools(pools []WorkerPool, legacyWorkers ...int) error
 			if profile == nil {
 				return fmt.Errorf("worker_pools 中 profile_id %d 不存在", pool.ProfileID)
 			}
+			if profile.Format == "jev" {
+				return pgdb.ErrJevProfileJudgeOnly
+			}
 		}
 	}
 	b, err := json.Marshal(pools)

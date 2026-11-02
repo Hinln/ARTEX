@@ -1109,7 +1109,7 @@ export interface NotificationDelivery {
 export interface LLMProfile {
   id: string;
   name: string;
-  format: "openai" | "anthropic" | "openai-responses";
+  format: "openai" | "anthropic" | "openai-responses" | "jev";
   base_url?: string;
   proxy?: string;
   model: string;
@@ -1433,6 +1433,7 @@ export interface JudgeConfig {
   ask_timeout_seconds: number; // 模型判 ask 转人工后的审批等待超时
   ask_timeout_action: "allow" | "deny"; // 审批超时后的默认动作
   incomplete_script_action: "ask" | "model"; // 脚本快照不完整时：人工审查或继续模型审查
+  confidence_threshold: number; // Jev 置信度低于此值时转人工
 }
 
 // JudgeUsage: 模型兜底审批(judge 通道)的累计 token 用量 + 近 N 天每日序列。

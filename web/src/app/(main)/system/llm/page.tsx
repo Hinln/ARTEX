@@ -311,7 +311,7 @@ function ProfileSheet({
 }) {
   const isNew = !profile;
   const [name, setName] = React.useState("");
-  const [format, setFormat] = React.useState<"anthropic" | "openai" | "openai-responses">("anthropic");
+  const [format, setFormat] = React.useState<"anthropic" | "openai" | "openai-responses" | "jev">("anthropic");
   const [model, setModel] = React.useState("");
   const [baseUrl, setBaseUrl] = React.useState("");
   const [proxy, setProxy] = React.useState("");
@@ -340,8 +340,8 @@ function ProfileSheet({
   React.useEffect(() => {
     if (!open) return;
     setName(profile?.name ?? "");
-    setFormat(profile?.format === "openai" || profile?.format === "openai-responses" ? profile.format : "anthropic");
-    setModel(profile?.model ?? "");
+    setFormat(profile?.format === "openai" || profile?.format === "openai-responses" || profile?.format === "jev" ? profile.format : "anthropic");
+    setModel(profile?.model ?? (profile?.format === "jev" ? "jev-latest" : ""));
     setBaseUrl(profile?.base_url ?? "");
     setProxy(profile?.proxy ?? "");
     setRps(String(profile?.rate_per_second ?? 0));
@@ -492,7 +492,11 @@ function ProfileSheet({
             </div>
             <div className="grid gap-2">
               <Label>格式</Label>
-              <Select value={format} onValueChange={(v) => setFormat(v as "anthropic" | "openai" | "openai-responses")}>
+              <Select value={format} onValueChange={(v) => {
+                const next = v as "anthropic" | "openai" | "openai-responses" | "jev";
+                setFormat(next);
+                if (next === "jev" && !model.trim()) setModel("jev-latest");
+              }}>
                 <SelectTrigger>
                   <SelectValue placeholder="选择格式" />
                 </SelectTrigger>
@@ -500,6 +504,7 @@ function ProfileSheet({
                   <SelectItem value="anthropic">Anthropic</SelectItem>
                   <SelectItem value="openai">OpenAI (Chat Completions)</SelectItem>
                   <SelectItem value="openai-responses">OpenAI (Responses API)</SelectItem>
+                  <SelectItem value="jev">Jev / System One（仅拦截判定）</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -524,9 +529,9 @@ function ProfileSheet({
                     variant="outline"
                     size="icon"
                     className="shrink-0"
-                    disabled={loadingModels}
+                    disabled={loadingModels || format === "jev"}
                     onClick={loadModels}
-                    title="从 API 加载可用模型"
+                    title={format === "jev" ? "Jev 使用固定默认模型 jev-latest，不提供模型列表" : "从 API 加载可用模型"}
                   >
                     {loadingModels ? <Loader2Icon className="animate-spin" /> : <RefreshCwIcon />}
                   </Button>
@@ -550,6 +555,9 @@ function ProfileSheet({
                 )}
               </Popover>
             </div>
+            {format === "jev" && (
+              <p className="text-muted-foreground text-xs">Jev / System One 不提供模型列表，默认模型为 <code className="font-mono">jev-latest</code>。</p>
+            )}
           </div>
 
           <div className="grid gap-2">
@@ -916,7 +924,7 @@ export default function LLMPage() {
                         <div className="flex flex-wrap items-center gap-2">
                           <span className="truncate font-medium text-sm">{p.name}</span>
                           <Badge variant="outline" className="uppercase">
-                            {p.format}
+                            {p.format === "jev" ? "Jev / System One" : p.format}
                           </Badge>
                           <Badge variant="outline" className={cn("ml-auto", h.cls)} title={h.hint}>
                             {h.label}
@@ -946,13 +954,13 @@ export default function LLMPage() {
                         size="sm"
                         variant="outline"
                         className="flex-1"
-                        disabled={p.is_default}
+                        disabled={p.is_default || p.format === "jev"}
                         onClick={(e) => {
                           e.stopPropagation();
                           void activate(p.id, p.name);
                         }}
                       >
-                        {p.is_default ? "已激活" : "设为激活"}
+                        {p.is_default ? "已激活" : p.format === "jev" ? "判定专用" : "设为激活"}
                       </Button>
                       <Button
                         size="icon"

@@ -334,7 +334,7 @@ function LLMProfileRow({
               </span>
             )}
           </button>
-          {profiles.map((p) => (
+          {profiles.filter((p) => p.format !== "jev").map((p) => (
             <button
               key={p.id}
               type="button"

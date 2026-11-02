@@ -139,7 +139,7 @@ func (d *DB) ProfileByID(id int64) (*LLMProfile, error) {
 // walk the slice front to back.
 func (d *DB) PoolProfiles() ([]*LLMProfile, error) {
 	rows, err := d.Query(`SELECT ` + profileColsKey + ` FROM llm_profiles
-WHERE COALESCE(api_key,'') <> '' AND (is_default OR NOT pool_exclude)
+WHERE format <> 'jev' AND COALESCE(api_key,'') <> '' AND (is_default OR NOT pool_exclude)
 ORDER BY is_default DESC, priority DESC, id ASC`)
 	if err != nil {
 		return nil, err
@@ -158,6 +158,15 @@ ORDER BY is_default DESC, priority DESC, id ASC`)
 
 // SaveProfile inserts (id==0) or updates a profile. Empty apiKey on update keeps existing.
 func (d *DB) SaveProfile(p *LLMProfile) (int64, error) {
+	if p.Format == "jev" && p.IsDefault {
+		return 0, ErrJevProfileJudgeOnly
+	}
+	if p.Format == "jev" && p.ID != 0 {
+		var active bool
+		if err := d.QueryRow(`SELECT is_default FROM llm_profiles WHERE id=$1`, p.ID).Scan(&active); err == nil && active {
+			return 0, ErrJevProfileJudgeOnly
+		}
+	}
 	hint := p.APIKeyHint
 	if len(p.APIKey) >= 4 {
 		hint = "…" + p.APIKey[len(p.APIKey)-4:]
@@ -187,6 +196,7 @@ var (
 	ErrActiveLLMProfileDelete      = errors.New("cannot delete the active LLM profile; activate another profile first")
 	ErrLLMProfileReferencesChanged = errors.New("LLM profile references changed while deleting; retry the request")
 	ErrLLMProfileNotFound          = errors.New("LLM profile not found")
+	ErrJevProfileJudgeOnly         = errors.New("Jev System One 配置仅可用于拦截判定模型，不能用于对话或任务")
 )
 
 func (d *DB) DeleteProfile(id int64) error {
@@ -422,6 +432,16 @@ func (d *DB) SetActiveProfile(id int64) error {
 		return err
 	}
 	defer tx.Rollback()
+	var format string
+	if err := tx.QueryRow(`SELECT format FROM llm_profiles WHERE id=$1 FOR KEY SHARE`, id).Scan(&format); err != nil {
+		if err == sql.ErrNoRows {
+			return ErrLLMProfileNotFound
+		}
+		return err
+	}
+	if format == "jev" {
+		return ErrJevProfileJudgeOnly
+	}
 	if _, err := tx.Exec(`UPDATE llm_profiles SET is_default=false WHERE is_default`); err != nil {
 		return err
 	}
@@ -612,6 +632,15 @@ func (d *DB) SetAgentLLMProfile(key string, id *int64) error {
 	}
 	if err := lockLLMProfileForReference(tx, id); err != nil {
 		return err
+	}
+	if id != nil {
+		var format string
+		if err := tx.QueryRow(`SELECT format FROM llm_profiles WHERE id=$1`, *id).Scan(&format); err != nil {
+			return err
+		}
+		if format == "jev" {
+			return ErrJevProfileJudgeOnly
+		}
 	}
 	if _, err := tx.Exec(`UPDATE agents SET llm_profile_id=$1 WHERE id=$2`, id, agentID); err != nil {
 		return err
@@ -815,7 +844,7 @@ type MCPServer struct {
 	Env       json.RawMessage `json:"env"`
 	URL       string          `json:"url,omitempty"`
 	Enabled   bool            `json:"enabled"`
-	Insecure  bool            `json:"insecure"` // http: skip TLS cert verification (self-signed servers, issue #108)
+	Insecure  bool            `json:"insecure"`        // http: skip TLS cert verification (self-signed servers, issue #108)
 	Tools     []string        `json:"tools,omitempty"` // cached tool names (mcp_tools_cache)
 }
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -16,6 +17,7 @@ import (
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/guard"
 	"github.com/Autumn-27/artex/intercept"
+	"github.com/Autumn-27/artex/intercept/jev"
 	"github.com/Autumn-27/artex/llmrec"
 	"github.com/Autumn-27/norma/llm"
 )
@@ -44,6 +46,22 @@ func (s *Server) wireInterceptReviewer() {
 		if profileID == 0 {
 			return intercept.Decision{}, fmt.Errorf("未配置可用的裁判模型")
 		}
+		profile, err := s.m.pg.ProfileByID(profileID)
+		if err != nil || profile == nil {
+			return intercept.Decision{ProfileID: profileID}, fmt.Errorf("裁判模型 profile %d 不可用", profileID)
+		}
+		if profile.Format == "jev" {
+			if strings.TrimSpace(profile.APIKey) == "" {
+				return intercept.Decision{ProfileID: profileID}, fmt.Errorf("Jev 判定模型未设置 API Key")
+			}
+			ctx = llmrec.WithWorker(ctx, judgeWorkerLane)
+			started := time.Now()
+			decision, usage, reviewErr := (jev.Config{
+				BaseURL: profile.BaseURL, APIKey: profile.APIKey, Model: profile.Model, Proxy: profile.Proxy,
+			}).ReviewWithUsage(ctx, input, prompt, s.m.interceptor.GetJudgeConfig().ConfidenceThreshold, profileID)
+			s.recordJevJudgeUsage(ctx, profile, usage, started, reviewErr)
+			return decision, reviewErr
+		}
 		prov, _, ok := s.providerForProfile(profileID)
 		if !ok {
 			return intercept.Decision{ProfileID: profileID}, fmt.Errorf("裁判模型 profile %d 不可用", profileID)
@@ -61,6 +79,32 @@ func (s *Server) wireInterceptReviewer() {
 		}
 		return intercept.Decision{Action: v.Action, Message: v.Reason, ProfileID: profileID}, nil
 	})
+}
+
+func (s *Server) recordJevJudgeUsage(ctx context.Context, profile *db.LLMProfile, usage jev.Usage, started time.Time, callErr error) {
+	if s == nil || s.m == nil || s.m.PG() == nil || profile == nil {
+		return
+	}
+	status := "ok"
+	if callErr != nil {
+		status = "error"
+	}
+	model := strings.TrimSpace(profile.Model)
+	if model == "" {
+		model = jev.DefaultModel
+	}
+	if err := s.m.PG().InsertLLMUsage(&db.LLMUsage{
+		TaskID:       llmrec.TaskIDFrom(ctx),
+		Worker:       judgeWorkerLane,
+		Model:        model,
+		ProfileName:  profile.Name,
+		LatencyMs:    int(time.Since(started).Milliseconds()),
+		InputTokens:  usage.InputTokens,
+		OutputTokens: usage.OutputTokens,
+		Status:       status,
+	}); err != nil {
+		log.Printf("[llmusage] Jev judge insert: %v", err)
+	}
 }
 
 func reviewCompletion(ctx context.Context, prov llm.Provider, prompt string, input intercept.ReviewInput) (string, error) {
@@ -449,9 +493,25 @@ func (s *Server) interceptGetJudgeConfig(w http.ResponseWriter, r *http.Request)
 
 // interceptSetJudgeConfig persists the judge configuration.
 func (s *Server) interceptSetJudgeConfig(w http.ResponseWriter, r *http.Request) {
-	var req intercept.JudgeConfig
-	if err := decode(r, &req); err != nil {
+	var raw json.RawMessage
+	if err := decode(r, &raw); err != nil {
 		writeErr(w, 400, err.Error())
+		return
+	}
+	var req intercept.JudgeConfig
+	if err := json.Unmarshal(raw, &req); err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	if _, present := fields["confidence_threshold"]; !present {
+		req.ConfidenceThreshold = 0.55
+	} else if req.ConfidenceThreshold < 0 || req.ConfidenceThreshold > 1 {
+		writeErr(w, 400, "confidence_threshold 必须在 0 到 1 之间")
 		return
 	}
 	switch req.FailAction {
@@ -479,7 +539,11 @@ func (s *Server) interceptSetJudgeConfig(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if err := s.m.interceptor.SetJudgeConfig(req); err != nil {
-		writeErr(w, 500, err.Error())
+		if strings.Contains(err.Error(), "confidence_threshold") {
+			writeErr(w, 400, err.Error())
+		} else {
+			writeErr(w, 500, err.Error())
+		}
 		return
 	}
 	writeJSON(w, 200, map[string]any{"ok": true})

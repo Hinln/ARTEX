@@ -1324,7 +1324,7 @@ export default function SystemSettingsPage() {
                             {!selected && pool.profile_id ? (
                               <SelectItem value={pool.profile_id}>配置 #{pool.profile_id} 已删除/不可用</SelectItem>
                             ) : null}
-                            {llmProfiles.map((profile) => (
+                            {llmProfiles.filter((profile) => profile.format !== "jev").map((profile) => (
                               <SelectItem key={profile.id} value={profile.id}>
                                 {profile.name} · {profile.model}
                               </SelectItem>

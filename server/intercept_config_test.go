@@ -129,3 +129,41 @@ func TestJudgeConfigRetryRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+func TestJudgeConfidenceThresholdKeepsExplicitZeroAndRejectsOutOfRange(t *testing.T) {
+	judgeConfigSQLiteNow.Do(func() {
+		sqlite.MustRegisterDeterministicScalarFunction("now", 0, func(*sqlite.FunctionContext, []driver.Value) (driver.Value, error) {
+			return "2026-01-01 00:00:00", nil
+		})
+	})
+	sqldb, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sqldb.Close() })
+	if _, err := sqldb.Exec(`CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT, updated_at TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	pg := &db.DB{DB: sqldb}
+	s := &Server{m: &Manager{pg: pg, interceptor: intercept.New(pg)}}
+	cfg := s.m.interceptor.GetJudgeConfig()
+	cfg.ConfidenceThreshold = 0
+	body, _ := json.Marshal(cfg)
+	w := httptest.NewRecorder()
+	s.interceptSetJudgeConfig(w, httptest.NewRequest("PUT", "/api/intercept/judge", strings.NewReader(string(body))))
+	if w.Code != 200 || s.m.interceptor.GetJudgeConfig().ConfidenceThreshold != 0 {
+		t.Fatalf("explicit zero status=%d cfg=%+v body=%s", w.Code, s.m.interceptor.GetJudgeConfig(), w.Body.String())
+	}
+	w = httptest.NewRecorder()
+	s.interceptSetJudgeConfig(w, httptest.NewRequest("PUT", "/api/intercept/judge", strings.NewReader(`{"fail_action":"ask","ask_timeout_action":"deny"}`)))
+	if w.Code != 200 || s.m.interceptor.GetJudgeConfig().ConfidenceThreshold != 0.55 {
+		t.Fatalf("missing threshold status=%d cfg=%+v body=%s", w.Code, s.m.interceptor.GetJudgeConfig(), w.Body.String())
+	}
+	for _, value := range []string{"-0.01", "1.01"} {
+		w = httptest.NewRecorder()
+		s.interceptSetJudgeConfig(w, httptest.NewRequest("PUT", "/api/intercept/judge", strings.NewReader(`{"fail_action":"ask","ask_timeout_action":"deny","confidence_threshold":`+value+`}`)))
+		if w.Code != 400 {
+			t.Fatalf("threshold=%s status=%d body=%s", value, w.Code, w.Body.String())
+		}
+	}
+}

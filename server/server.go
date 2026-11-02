@@ -22,6 +22,7 @@ import (
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/intercept"
+	"github.com/Autumn-27/artex/intercept/jev"
 	"github.com/Autumn-27/artex/llmpool"
 	"github.com/Autumn-27/artex/llmrec"
 	"github.com/Autumn-27/artex/report"
@@ -135,6 +136,9 @@ type Server struct {
 type provEntry struct {
 	prov llm.Provider
 	cfg  agent.Config
+	// jev is retained in the cache entry so a cached chat provider can be
+	// returned without consulting the DB on every hot-path resolution.
+	jev bool
 }
 
 // triggeredRun is one queued P3 trigger fire awaiting its turn for an agent.
@@ -363,6 +367,9 @@ func (s *Server) loadLLMConfig() (agent.Config, bool) {
 	if err != nil || p == nil {
 		return agent.Config{}, false
 	}
+	if p.Format == "jev" {
+		return agent.Config{}, false
+	}
 	cfg := agent.ConfigFrom(p.Format, p.Model, p.BaseURL, p.APIKey, p.Proxy)
 	cfg.RatePerSecond, cfg.RatePerMinute = p.RatePerSecond, p.RatePerMinute
 	cfg.ContextWindowK = p.ContextWindowK
@@ -383,8 +390,12 @@ func (s *Server) loadLLMConfig() (agent.Config, bool) {
 
 // saveLLMConfig persists the LLM config as the active "default" profile in PG.
 func (s *Server) saveLLMConfig(cfg agent.Config) error {
-	// cfg.Provider() already returns one of the three valid format strings
-	// (anthropic / openai / openai-responses), matching the DB CHECK constraint.
+	if cfg.Jev || cfg.Provider() == "jev" {
+		return db.ErrJevProfileJudgeOnly
+	}
+	// cfg.Provider() returns one of the chat format strings
+	// (anthropic / openai / openai-responses), matching the DB CHECK constraint;
+	// Jev is intentionally handled by the dedicated intercept path.
 	format := cfg.Provider()
 	var id int64
 	// 这个 legacy 端点的请求体不含轮询/收发/输出上限参数,故把库里已存的值原样带回 —
@@ -464,6 +475,9 @@ func maxTokensResolver(cfg agent.Config) func() int {
 // applyLLM (re)builds the planner/worker/main-agent from cfg and installs them on
 // the running engine as the GLOBAL active pair. Safe to call at runtime (UI configures LLM).
 func (s *Server) applyLLM(cfg agent.Config) error {
+	if cfg.Jev {
+		return fmt.Errorf("Jev System One 仅可用于拦截判定模型，不能作为聊天 provider")
+	}
 	var prov llm.Provider
 	// A persisted active profile must use the same cached provider as task chains
 	// and Agent bindings, otherwise each path owns a separate rate limiter.
@@ -532,6 +546,16 @@ func (s *Server) applyLLM(cfg agent.Config) error {
 func (s *Server) loadProfileConfig(id int64) (agent.Config, bool) {
 	p, err := s.m.pg.ProfileByID(id)
 	if err != nil || p == nil {
+		return agent.Config{}, false
+	}
+	return s.profileConfig(p)
+}
+
+func (s *Server) profileConfig(p *db.LLMProfile) (agent.Config, bool) {
+	if p == nil {
+		return agent.Config{}, false
+	}
+	if p.Format == "jev" {
 		return agent.Config{}, false
 	}
 	cfg := agent.ConfigFrom(p.Format, p.Model, p.BaseURL, p.APIKey, p.Proxy)
@@ -604,22 +628,50 @@ func (s *Server) providerForProfile(id int64) (llm.Provider, agent.Config, bool)
 		s.provByProfile = make(map[int64]*provEntry)
 	}
 	if e := s.provByProfile[id]; e != nil {
+		if e.jev {
+			s.provCacheMu.Unlock()
+			return nil, agent.Config{}, false
+		}
 		s.provCacheMu.Unlock()
 		return e.prov, e.cfg, true
 	}
 	generation := s.provCacheGen
 	s.provCacheMu.Unlock()
-	cfg, ok := s.loadProfileConfig(id)
+	// Only a cache miss reaches the DB. This preserves an already-built chat
+	// provider during a transient profile lookup failure and avoids a query for
+	// every agent/task resolution.
+	profile, err := s.m.pg.ProfileByID(id)
+	if err != nil || profile == nil {
+		return nil, agent.Config{}, false
+	}
+	if profile.Format == "jev" {
+		// Cache the negative result too. Profile writes/activation invalidate this
+		// generation, while a transient DB error on a cached chat profile above
+		// still returns that already-built provider.
+		s.provCacheMu.Lock()
+		if generation == s.provCacheGen {
+			if s.provByProfile == nil {
+				s.provByProfile = map[int64]*provEntry{}
+			}
+			s.provByProfile[id] = &provEntry{jev: true}
+		}
+		s.provCacheMu.Unlock()
+		return nil, agent.Config{}, false
+	}
+	cfg, ok := s.profileConfig(profile)
 	if !ok {
 		return nil, agent.Config{}, false
 	}
-	profile, _ := s.m.pg.ProfileByID(id)
 	s.provCacheMu.Lock()
 	if generation != s.provCacheGen {
 		s.provCacheMu.Unlock()
 		return s.providerForProfile(id)
 	}
 	if e := s.provByProfile[id]; e != nil { // lost the race → keep the winner
+		if e.jev {
+			s.provCacheMu.Unlock()
+			return nil, agent.Config{}, false
+		}
 		s.provCacheMu.Unlock()
 		return e.prov, e.cfg, true
 	}
@@ -636,7 +688,7 @@ func (s *Server) providerForProfile(id int64) (llm.Provider, agent.Config, bool)
 		prov = llmrec.Wrap(prov, s.m.PG(), cfg.Model, profile.Name, cfg.ThinkingType, cfg.ReasoningEffort, s.m.LLMRecordEnabled)
 		prov = bindSideProvider(prov, cfg, id, profile.Name)
 	}
-	s.provByProfile[id] = &provEntry{prov: prov, cfg: cfg}
+	s.provByProfile[id] = &provEntry{prov: prov, cfg: cfg, jev: false}
 	log.Printf("[engine] built provider for LLM profile %d (%s / %s)", id, cfg.Provider(), cfg.Model)
 	s.provCacheMu.Unlock()
 	return prov, cfg, true
@@ -1502,6 +1554,45 @@ func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
+	if strings.TrimSpace(req.Provider) == "jev" {
+		apiKey := strings.TrimSpace(req.APIKey)
+		baseURL, model := strings.TrimSpace(req.BaseURL), strings.TrimSpace(req.Model)
+		if req.ProfileID != nil {
+			if p, err := s.m.pg.ProfileByID(*req.ProfileID); err == nil && p != nil {
+				if apiKey == "" {
+					apiKey = p.APIKey
+				}
+				if baseURL == "" {
+					baseURL = p.BaseURL
+				}
+				if model == "" {
+					model = p.Model
+				}
+			}
+		}
+		if apiKey == "" {
+			writeJSON(w, 200, map[string]any{"ok": false, "error": "未提供 API Key"})
+			return
+		}
+		if model == "" {
+			model = jev.DefaultModel
+		}
+		proxy := strings.TrimSpace(req.Proxy)
+		if proxy == "" && req.ProfileID != nil {
+			if p, err := s.m.pg.ProfileByID(*req.ProfileID); err == nil && p != nil {
+				proxy = p.Proxy
+			}
+		}
+		testCtx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+		lat, reply, err := (jev.Config{BaseURL: baseURL, APIKey: apiKey, Model: model, Proxy: proxy}).TestConnection(testCtx)
+		if err != nil {
+			writeJSON(w, 200, map[string]any{"ok": false, "error": err.Error()})
+			return
+		}
+		writeJSON(w, 200, map[string]any{"ok": true, "latency_ms": lat.Milliseconds(), "model": model, "reply": truncateReply(reply)})
+		return
+	}
 	cfg := agent.ConfigFrom(req.Provider, req.Model, req.BaseURL, req.APIKey, req.Proxy)
 	// mirror production: send the SAME thinking params so a provider that rejects the
 	// reasoning_effort/thinking field fails the test too (no false "test ok, run 400").
@@ -1696,6 +1787,9 @@ func (s *Server) validateTaskProfileIDs(ids []int64) error {
 			return fmt.Errorf("LLM 配置 id 无效或重复")
 		}
 		seen[id] = true
+		if p, err := s.m.pg.ProfileByID(id); err == nil && p != nil && p.Format == "jev" {
+			return db.ErrJevProfileJudgeOnly
+		}
 		if _, ok := s.loadProfileConfig(id); !ok {
 			return fmt.Errorf("LLM 配置 #%d 不存在或未设置 API Key", id)
 		}
