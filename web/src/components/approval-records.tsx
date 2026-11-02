@@ -459,6 +459,8 @@ export function ApprovalDetail({
       label={`审批 #${row.id} · ${row.tool_name}`}
       composerLayout="stacked"
       placeholder="询问此审批中的脚本或审查理由…"
+      noSnapshotHint="当前审批材料准备好后即可提问"
+      emptyDescription="根据当前审批材料回答，旁路问答不会执行脚本。"
       suggestions={[
         "此脚本的作用是什么？",
         "脚本会修改哪些文件或数据？",

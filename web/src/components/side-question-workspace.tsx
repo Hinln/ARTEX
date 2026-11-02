@@ -53,12 +53,16 @@ function SidePanel({
   composerLayout,
   suggestions,
   placeholder,
+  noSnapshotHint,
+  emptyDescription,
 }: {
   side: SideQuestions;
   label: string;
   composerLayout: ComposerLayout;
   suggestions?: string[];
   placeholder?: string;
+  noSnapshotHint?: string;
+  emptyDescription?: string;
 }) {
   const inlineComposer = composerLayout === "inline";
   const [confirm, setConfirm] = useState(false);
@@ -93,13 +97,13 @@ function SidePanel({
         </Button>
       </div>
       <div className="border-b px-3 py-2 text-muted-foreground text-xs">
-        {side.snapshot ? (
+        {side.snapshot?.available ? (
           <>
             <p>{side.snapshot.model.model}</p>
             <p>上下文更新于 {new Date(side.snapshot.captured_at).toLocaleString()}</p>
           </>
         ) : (
-          "主 Agent 首次运行后即可提问"
+          noSnapshotHint ?? "主 Agent 首次运行后即可提问"
         )}
       </div>
       <div
@@ -120,7 +124,7 @@ function SidePanel({
           <Empty>
             <EmptyHeader>
               <EmptyTitle>随时问一个问题</EmptyTitle>
-              <EmptyDescription>根据当前 Agent 的上下文回答，主任务继续运行。</EmptyDescription>
+              <EmptyDescription>{emptyDescription ?? "根据当前 Agent 的上下文回答，主任务继续运行。"}</EmptyDescription>
             </EmptyHeader>
           </Empty>
         )}
@@ -158,9 +162,9 @@ function SidePanel({
         </div>
       </div>
       <div className="shrink-0 border-t p-3">
-        {(side.error || side.snapshot?.reason) && (
+        {(side.error || side.snapshotError || side.snapshot?.reason) && (
           <Alert variant="destructive" className="mb-2">
-            <AlertDescription>{side.error || side.snapshot?.reason}</AlertDescription>
+            <AlertDescription>{side.error || side.snapshotError || side.snapshot?.reason}</AlertDescription>
           </Alert>
         )}
         <InputGroup className={inlineComposer ? "min-h-10" : "min-h-9"}>
@@ -252,6 +256,8 @@ export function SideQuestionWorkspace({
   composerLayout = "stacked",
   suggestions,
   placeholder,
+  noSnapshotHint,
+  emptyDescription,
   className,
   mainClassName,
 }: {
@@ -262,6 +268,8 @@ export function SideQuestionWorkspace({
   composerLayout?: ComposerLayout;
   suggestions?: string[];
   placeholder?: string;
+  noSnapshotHint?: string;
+  emptyDescription?: string;
   className?: string;
   mainClassName?: string;
 }) {
@@ -281,6 +289,8 @@ export function SideQuestionWorkspace({
                 composerLayout={composerLayout}
                 suggestions={suggestions}
                 placeholder={placeholder}
+                noSnapshotHint={noSnapshotHint}
+                emptyDescription={emptyDescription}
               />
             </div>
           </div>
@@ -302,6 +312,8 @@ export function SideQuestionWorkspace({
               composerLayout={composerLayout}
               suggestions={suggestions}
               placeholder={placeholder}
+              noSnapshotHint={noSnapshotHint}
+              emptyDescription={emptyDescription}
             />
           </ResizablePanel>
         </ResizablePanelGroup>
@@ -320,6 +332,8 @@ export function SideQuestionWorkspace({
             composerLayout={composerLayout}
             suggestions={suggestions}
             placeholder={placeholder}
+            noSnapshotHint={noSnapshotHint}
+            emptyDescription={emptyDescription}
           />
         </DrawerContent>
       </Drawer>

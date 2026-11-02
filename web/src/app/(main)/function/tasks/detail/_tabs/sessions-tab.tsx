@@ -1757,6 +1757,15 @@ export function SessionsTab({ taskId, requestedSession = "" }: { taskId: string;
         <SideQuestionWorkspace
           side={side}
           label={active.role === "worker" ? `Worker #${active.intent_id} · ${activeDisplayTitle}` : activeDisplayTitle}
+          noSnapshotHint={
+            isMain ? "有任务描述、Planner/Worker 结果或发现记录后即可提问" : "对应 Worker 首次运行后即可提问"
+          }
+          emptyDescription={
+            isMain
+              ? "根据当前任务上下文回答，主任务继续运行；暂停或尚未运行主 Agent 也可以提问。"
+              : "根据当前 Worker 的上下文回答，旁路问答不会执行工具。"
+          }
+          placeholder={isMain ? "询问当前任务上下文…" : "询问当前 Worker 上下文…"}
         >
           <div className="flex min-h-0 flex-1 min-w-0 flex-col overflow-hidden rounded-lg border bg-card">
             <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 border-b px-3 py-2 sm:px-4 sm:py-2.5">

@@ -34,6 +34,7 @@ export interface SideHistory {
   current: SideExchange | null;
   next_cursor: number;
   snapshot: { captured_at: string; model: SideModel; available: boolean; reason: string } | null;
+  snapshot_error?: string;
 }
 
 async function request<T>(path: string, method = "GET", body?: unknown): Promise<T> {
@@ -61,6 +62,7 @@ export const sideAPI = {
       current: data?.current ?? null,
       next_cursor: Number(data?.next_cursor) || 0,
       snapshot: data?.snapshot ?? null,
+      snapshot_error: data?.snapshot_error ?? "",
     } satisfies SideHistory;
   },
   ask: (parent: string, question: string, client_request_id: string) =>

@@ -760,7 +760,13 @@ function ChatView({
   }
 
   return (
-    <SideQuestionWorkspace side={side} label={agent?.name ?? conv.agent_key} composerLayout="inline">
+    <SideQuestionWorkspace
+      side={side}
+      label={agent?.name ?? conv.agent_key}
+      composerLayout="inline"
+      noSnapshotHint="主 Agent 首次运行后即可提问"
+      emptyDescription="根据当前 Agent 的上下文回答，主任务继续运行。"
+    >
       {/* header: which agent + live + token meta */}
       <div className="flex min-w-0 flex-wrap items-center gap-2 border-b px-4 py-2.5">
         <Bot className="text-muted-foreground size-4 shrink-0" />

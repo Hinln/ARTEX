@@ -600,6 +600,9 @@ func (s *Server) chatUnavailableReason() string {
 // while legacy callers retain their existing fallback behavior.
 func (s *Server) providerForProfile(id int64) (llm.Provider, agent.Config, bool) {
 	s.provCacheMu.Lock()
+	if s.provByProfile == nil {
+		s.provByProfile = make(map[int64]*provEntry)
+	}
 	if e := s.provByProfile[id]; e != nil {
 		s.provCacheMu.Unlock()
 		return e.prov, e.cfg, true

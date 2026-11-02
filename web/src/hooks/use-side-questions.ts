@@ -28,6 +28,7 @@ export function useSideQuestions(parent: string | null) {
   const [open, setOpen] = useState(false);
   const [items, setItems] = useState<SideExchange[]>([]);
   const [snapshot, setSnapshot] = useState<SideHistory["snapshot"]>(null);
+  const [snapshotError, setSnapshotError] = useState("");
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -64,6 +65,7 @@ export function useSideQuestions(parent: string | null) {
         setItems((old) => merge(old, data.items));
         restoreFailedDraft(data.items);
         setSnapshot(data.snapshot);
+        setSnapshotError(data.snapshot_error ?? "");
         setLoadError("");
         if (before || !cursor.current) {
           cursor.current = data.next_cursor;
@@ -81,6 +83,7 @@ export function useSideQuestions(parent: string | null) {
     setStateParent(parent);
     setItems([]);
     setSnapshot(null);
+    setSnapshotError("");
     setNextCursor(0);
     setDraft("");
     setError("");
@@ -103,6 +106,7 @@ export function useSideQuestions(parent: string | null) {
         if (version !== epoch.current) return;
         setItems((old) => merge(old, data.items));
         setSnapshot(data.snapshot);
+        setSnapshotError(data.snapshot_error ?? "");
         setNextCursor(data.next_cursor);
         cursor.current = data.next_cursor;
       })
@@ -231,6 +235,7 @@ export function useSideQuestions(parent: string | null) {
     setOpen,
     items: current ? items : [],
     snapshot: current ? snapshot : null,
+    snapshotError: current ? snapshotError : "",
     draft: current ? draft : "",
     setDraft,
     busy: current && busy,
