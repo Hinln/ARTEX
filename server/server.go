@@ -3668,6 +3668,7 @@ func (s *Server) settingsPayload() map[string]any {
 		"web_search_backend":                   backend,
 		"brave_key_set":                        strings.TrimSpace(braveKey) != "",
 		"tavily_key_set":                       strings.TrimSpace(tavilyKey) != "",
+		"deepseek_search_key_set":              s.m.deepSeekSearchKey() != "",
 		"web_search_proxy":                     maskSecrets(proxy),             // 独立出口代理(http/https/socks5)，空=直连
 		"global_proxy":                         maskSecrets(s.m.GlobalProxy()), // 全局出口代理(http/https/socks5)，所有目标流量走它，空=直连
 		"proxy_pool":                           func() []ProxyPoolEntry { e, _, _ := s.m.ProxyPoolSnapshot(); return e }(),
@@ -3768,6 +3769,7 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		WebSearchBackend       *string       `json:"web_search_backend"`
 		BraveKey               *string       `json:"brave_search_api_key"`
 		TavilyKey              *string       `json:"tavily_search_api_key"`
+		DeepSeekSearchKey      *string       `json:"deepseek_search_api_key"`
 		WebSearchProxy         *string       `json:"web_search_proxy"` // 独立出口代理(http/https/socks5)；null=不改，""=清空
 		GlobalProxy            *string       `json:"global_proxy"`     // 全局出口代理(http/https/socks5)；null=不改，""=清空(直连)
 		ProxyRotateTimed       *bool         `json:"proxy_rotate_timed_enabled"`
@@ -4055,7 +4057,7 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if req.WebSearchEnabled != nil || req.WebSearchBackend != nil || req.BraveKey != nil || req.TavilyKey != nil || req.WebSearchProxy != nil {
+	if req.WebSearchEnabled != nil || req.WebSearchBackend != nil || req.BraveKey != nil || req.TavilyKey != nil || req.DeepSeekSearchKey != nil || req.WebSearchProxy != nil {
 		// Fill unspecified fields from current state so a partial PUT doesn't reset them.
 		on, backend, _, _, _ := s.m.WebSearch()
 		if req.WebSearchEnabled != nil {
@@ -4069,6 +4071,16 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 			req.WebSearchProxy = &savedSearchProxy
 		}
 		if err := s.m.SetWebSearch(on, backend, req.BraveKey, req.TavilyKey, req.WebSearchProxy); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		changed = true
+	}
+	if req.DeepSeekSearchKey != nil {
+		if strings.Contains(*req.DeepSeekSearchKey, "***") {
+			*req.DeepSeekSearchKey = s.m.deepSeekSearchKey()
+		}
+		if err := s.m.setDeepSeekSearchKey(*req.DeepSeekSearchKey); err != nil {
 			writeErr(w, 500, err.Error())
 			return
 		}
@@ -4129,10 +4141,11 @@ func (s *Server) setReporterBrowserScreenshotVisibility(enabled bool) error {
 // not retype them. Always 200 with {ok, error?, count?, backend?}.
 func (s *Server) testWebSearch(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Backend   string `json:"web_search_backend"`
-		Proxy     string `json:"web_search_proxy"`
-		BraveKey  string `json:"brave_search_api_key"`
-		TavilyKey string `json:"tavily_search_api_key"`
+		Backend           string `json:"web_search_backend"`
+		Proxy             string `json:"web_search_proxy"`
+		BraveKey          string `json:"brave_search_api_key"`
+		TavilyKey         string `json:"tavily_search_api_key"`
+		DeepSeekSearchKey string `json:"deepseek_search_api_key"`
 	}
 	// Empty body is fine — fall back entirely to the saved config below.
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
@@ -4155,18 +4168,24 @@ func (s *Server) testWebSearch(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(req.TavilyKey) != "" {
 		tavilyKey = req.TavilyKey
 	}
+	deepSeekKey := s.m.deepSeekSearchKey()
+	if strings.TrimSpace(req.DeepSeekSearchKey) != "" {
+		deepSeekKey = strings.TrimSpace(req.DeepSeekSearchKey)
+	}
 	cfg := actool.WebSearchConfig{Backend: backend, BraveAPIKey: braveKey, TavilyAPIKey: tavilyKey, Proxy: proxy}
 	// Hard cap so a slow/blocked proxy can't hang the request.
 	wall := 30 * time.Second
-	// deepseek 的凭据不在表单里，来自当前激活的 LLM 配置；同时它每次搜索都跑一次
-	// 模型推理，30s 的通用上限偏紧，单独放宽。这里不预判配置能不能用——测这一下
-	// 本来就是给用户自己确认的手段，真跑不通时下面的报错比预判更有信息量。
 	probeQuery := "test"
 	if strings.TrimSpace(backend) == deepSeekWebSearchBackend {
-		cfg.DeepSeekBaseURL, cfg.DeepSeekAPIKey, cfg.DeepSeekModel = s.m.deepSeekSearchCreds()
-		wall = 120 * time.Second
-		// 搜索词由 DeepSeek 端的模型自行决定，"test" 太空泛会让它跳过搜索直接作答。
-		probeQuery = "DeepSeek company official website"
+		ctx, cancel := context.WithTimeout(r.Context(), wall)
+		defer cancel()
+		count, err := agent.DeepSeekSearchProbe(ctx, deepSeekKey, proxy, "DeepSeek company official website", 3)
+		if err != nil {
+			writeJSON(w, 200, map[string]any{"ok": false, "error": err.Error(), "backend": backend})
+			return
+		}
+		writeJSON(w, 200, map[string]any{"ok": count > 0, "count": count, "backend": backend})
+		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), wall)
 	defer cancel()

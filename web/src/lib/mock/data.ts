@@ -3348,6 +3348,7 @@ export const settings: Settings = {
   web_search_backend: "ddgs",
   brave_key_set: false,
   tavily_key_set: true,
+  deepseek_search_key_set: false,
   web_search_proxy: "",
   global_proxy: "",
 	proxy_pool: [],

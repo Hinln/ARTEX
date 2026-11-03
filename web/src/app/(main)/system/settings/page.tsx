@@ -51,6 +51,9 @@ export default function SystemSettingsPage() {
   const [braveKeyInput, setBraveKeyInput] = React.useState("");
   const [tavilyKeySet, setTavilyKeySet] = React.useState(false);
   const [tavilyKeyInput, setTavilyKeyInput] = React.useState("");
+  const [deepSeekKeySet, setDeepSeekKeySet] = React.useState(false);
+  const [deepSeekKeyInput, setDeepSeekKeyInput] = React.useState("");
+  const [savingDeepSeekKey, setSavingDeepSeekKey] = React.useState(false);
   const [savingTavilyKey, setSavingTavilyKey] = React.useState(false);
   const [proxyInput, setProxyInput] = React.useState("");
   const [savingProxy, setSavingProxy] = React.useState(false);
@@ -124,6 +127,7 @@ export default function SystemSettingsPage() {
     setBackend(s.web_search_backend || "ddgs");
     setBraveKeySet(!!s.brave_key_set);
     setTavilyKeySet(!!s.tavily_key_set);
+    setDeepSeekKeySet(!!s.deepseek_search_key_set);
     setProxyInput(s.web_search_proxy ?? "");
     const savedProxy = s.global_proxy ?? "";
     setGlobalProxyInput(savedProxy);
@@ -437,6 +441,16 @@ export default function SystemSettingsPage() {
       .finally(() => setSavingTavilyKey(false));
   };
 
+  const saveDeepSeekKey = () => {
+    setSavingDeepSeekKey(true);
+    api.setSettings({ deepseek_search_api_key: deepSeekKeyInput }).then((s) => {
+      apply(s);
+      setDeepSeekKeyInput("");
+      toast.success("已保存 DeepSeek Search API Key");
+    }).catch((e) => toast.error(`保存失败：${(e as Error).message}`))
+      .finally(() => setSavingDeepSeekKey(false));
+  };
+
   const saveProxy = () => {
     setSavingProxy(true);
     api
@@ -608,6 +622,7 @@ export default function SystemSettingsPage() {
         web_search_proxy: proxyInput.trim(),
         brave_search_api_key: braveKeyInput,
         tavily_search_api_key: tavilyKeyInput,
+        deepseek_search_api_key: deepSeekKeyInput,
       })
       .then((r) => {
         if (r.ok) toast.success(`搜索测试成功 · ${r.backend} 返回 ${r.count} 条结果`);
@@ -1441,7 +1456,7 @@ export default function SystemSettingsPage() {
                   记录代理，独立于流量捕获。
                   <br />
                   来源可选 <b>DuckDuckGo（ddgs）</b>（无需 Key）、<b>Brave（免费版）</b>（需填写 Brave API Key）、{" "}
-                  <b>Tavily</b>（需填写 Tavily API Key）或 <b>DeepSeek</b>（复用当前 LLM 配置）。总开关关闭时，各 Agent
+                  <b>Tavily</b>（需填写 Tavily API Key）或 <b>DeepSeek</b>（需单独配置 Search API Key）。总开关关闭时，各 Agent
                   的网络搜索开关不可用。
                 </CardDescription>
               </CardHeader>
@@ -1487,21 +1502,31 @@ export default function SystemSettingsPage() {
 
                 {webSearch && backend === "deepseek" && (
                   <div className="border-border/60 bg-muted/30 flex flex-col gap-2 rounded-md border p-3">
-                    <p className="text-sm font-medium">DeepSeek 官方联网搜索</p>
+                    <p className="text-sm font-medium">DeepSeek 联网搜索</p>
                     <p className="text-muted-foreground text-xs leading-relaxed">
-                      该来源直接复用<b>当前激活的 LLM 配置</b>。因此它
-                      <b>仅支持 DeepSeek 官方模型</b>，且该配置<b>必须使用 anthropic 协议</b>
-                      ——DeepSeek 的 OpenAI 协议端点不支持服务端搜索。切换 LLM 配置后此来源可能失效。
+                      通过 DeepSeek 独立 Search / Fetch API 提供搜索与网页提取，使用当前 Agent 选择的模型生成查询和整理结果。
                     </p>
                     <p className="text-muted-foreground text-xs leading-relaxed">
-                      与其它来源不同，搜索由 <b>DeepSeek 服务端执行</b>：每次搜索会额外消耗一次模型调用（产生 Token
-                      费用），搜索请求<b>不经过上面的出口代理</b>，也<b>不计入流量留痕</b>；返回结果
-                      <b>只有标题和链接</b>
-                      （无摘要），需要正文时由 WebFetch 抓取。
+                      搜索请求由 ARTEX 服务端发往 DeepSeek，可使用上方独立出口代理。API Key 只保存于服务端设置，不会回显。
                     </p>
-                    <p className="text-muted-foreground text-xs leading-relaxed">
-                      是否满足上述条件由你自行确认，系统不做拦截；可用下方「测试搜索」按钮实际跑一次来验证。
-                    </p>
+                    <div className="flex items-center gap-2">
+                      <Input
+                        type="password"
+                        autoComplete="off"
+                        placeholder={deepSeekKeySet ? "已配置（留空则不变）" : "DeepSeek Search API Key"}
+                        value={deepSeekKeyInput}
+                        disabled={!loaded || savingDeepSeekKey}
+                        onChange={(e) => setDeepSeekKeyInput(e.target.value)}
+                      />
+                      <Button
+                        type="button"
+                        onClick={saveDeepSeekKey}
+                        disabled={!loaded || savingDeepSeekKey || deepSeekKeyInput.trim() === ""}
+                      >
+                        保存
+                      </Button>
+                    </div>
+                    {deepSeekKeySet && <span className="text-xs text-emerald-500">API Key 已配置</span>}
                   </div>
                 )}
 

@@ -996,6 +996,7 @@ export const api = {
     web_search_proxy?: string;
     brave_search_api_key?: string;
     tavily_search_api_key?: string;
+    deepseek_search_api_key?: string;
   }) => post<{ ok: boolean; error?: string; count?: number; backend?: string }>(`/settings/web-search/test`, patch),
 
   // global_proxy 传空 = 测直连；probe_url 可覆盖默认探测地址（隔离网用）。
