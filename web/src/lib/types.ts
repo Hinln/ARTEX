@@ -996,9 +996,11 @@ export interface Settings {
   web_search_backend: string; // "ddgs" | "brave-free" | "tavily" | "deepseek"
   brave_key_set: boolean;
   tavily_key_set: boolean;
+  deepseek_search_key_set: boolean;
   // write-only: only sent on PUT to store/clear the key.
   brave_search_api_key?: string;
   tavily_search_api_key?: string;
+  deepseek_search_api_key?: string;
   // 独立出口代理(http/https/socks5)，用于访问搜索端点；与记录流量的 MITM 代理无关。空=直连。
   web_search_proxy?: string;
   // 全局出口代理(http/https/socks5，可带 user:pass)，所有目标流量走它。开启流量捕获时作为
