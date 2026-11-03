@@ -1150,7 +1150,7 @@ func (s *Server) Handler() http.Handler {
 
 // --- handlers ---
 
-// health stays public for probes and must not expose application fingerprints.
+// health requires the optional Basic Auth gate but no admin JWT, and exposes no application fingerprints.
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, 200, map[string]any{"ok": true})

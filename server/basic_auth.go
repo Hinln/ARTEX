@@ -125,10 +125,9 @@ func (s *Server) setBasicAuthCookie(w http.ResponseWriter, r *http.Request, cfg 
 func (s *Server) requireBasicAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cfg := s.basicAuth.snapshot()
-		// Health probes stay public; CORS preflight contains no credentials and
-		// the API CORS handler returns 204 without invoking any business handler.
-		if !cfg.Enabled || (r.URL.Path == "/api/health" && (r.Method == "GET" || r.Method == "HEAD")) ||
-			(r.Method == "OPTIONS" && strings.HasPrefix(r.URL.Path, "/api/")) {
+		// CORS preflight contains no credentials; the API CORS handler returns
+		// 204 without invoking any business handler, including health probes.
+		if !cfg.Enabled || (r.Method == "OPTIONS" && strings.HasPrefix(r.URL.Path, "/api/")) {
 			next.ServeHTTP(w, r)
 			return
 		}
