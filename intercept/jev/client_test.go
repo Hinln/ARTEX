@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -77,7 +78,7 @@ func TestTruncateUTF8KeepsBoundary(t *testing.T) {
 
 func TestDecisionFromResponseLowConfidenceForcesAsk(t *testing.T) {
 	d, err := DecisionFromResponse(Response{Answers: map[string]Answer{
-		"decision": {Choice: "allow", Confidence: 0.3, Probabilities: map[string]float64{"allow": 0.8, "ask": 0.1, "deny": 0.1}},
+		"decision": {Type: "choice", Choice: "allow", Confidence: 0.3, Probabilities: map[string]float64{"allow": 0.8, "ask": 0.1, "deny": 0.1}},
 	}}, 0.55, 42)
 	if err != nil {
 		t.Fatal(err)
@@ -100,7 +101,7 @@ func TestDecisionFromResponseRejectsMissingOrInvalidAnswer(t *testing.T) {
 
 func TestDecisionFromResponseThresholdZeroAllowsLowConfidence(t *testing.T) {
 	d, err := DecisionFromResponse(Response{Answers: map[string]Answer{
-		"decision": {Choice: "allow", Confidence: 0.01},
+		"decision": {Type: "choice", Choice: "allow", Confidence: 0.01, Probabilities: map[string]float64{"allow": 0.8, "ask": 0.1, "deny": 0.1}},
 	}}, 0, 1)
 	if err != nil || d.Action != "allow" {
 		t.Fatalf("threshold zero decision=%#v err=%v", d, err)
@@ -110,7 +111,7 @@ func TestDecisionFromResponseThresholdZeroAllowsLowConfidence(t *testing.T) {
 func TestReviewForcesAskWhenEvidenceWasTruncated(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"answers":{"decision":{"choice":"allow","confidence":1}}}`))
+		_, _ = w.Write([]byte(`{"answers":{"decision":{"type":"choice","choice":"allow","confidence":1,"probabilities":{"allow":1,"ask":0,"deny":0}}}}`))
 	}))
 	defer srv.Close()
 	args := json.RawMessage(`{"payload":"` + strings.Repeat("x", 50000) + `"}`)
@@ -124,7 +125,7 @@ func TestReviewForcesAskWhenEvidenceWasTruncated(t *testing.T) {
 func TestReviewLowConfidenceTruncatedEvidenceKeepsBothReasons(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"answers":{"decision":{"choice":"allow","confidence":0.2,"probabilities":{"allow":0.8,"ask":0.1,"deny":0.1}}}}`))
+		_, _ = w.Write([]byte(`{"answers":{"decision":{"type":"choice","choice":"allow","confidence":0.2,"probabilities":{"allow":0.8,"ask":0.1,"deny":0.1}}}}`))
 	}))
 	defer srv.Close()
 	args := json.RawMessage(`{"payload":"` + strings.Repeat("x", 50000) + `"}`)
@@ -138,7 +139,7 @@ func TestReviewLowConfidenceTruncatedEvidenceKeepsBothReasons(t *testing.T) {
 func TestReviewForcesAskForIncompleteScriptEvidence(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"answers":{"decision":{"choice":"allow","confidence":1}}}`))
+		_, _ = w.Write([]byte(`{"answers":{"decision":{"type":"choice","choice":"allow","confidence":1,"probabilities":{"allow":1,"ask":0,"deny":0}}}}`))
 	}))
 	defer srv.Close()
 	d, _, err := (Config{BaseURL: srv.URL, APIKey: "secret", Client: srv.Client()}).ReviewWithUsage(
@@ -167,7 +168,7 @@ func TestSystemOneUsesConfiguredProxy(t *testing.T) {
 			t.Errorf("proxy path=%s", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"answers":{"decision":{"choice":"deny","confidence":1}}}`))
+		_, _ = w.Write([]byte(`{"answers":{"decision":{"type":"choice","choice":"deny","confidence":1,"probabilities":{"allow":0,"ask":0,"deny":1}}}}`))
 	}))
 	defer proxy.Close()
 	lat, _, err := (Config{BaseURL: "http://target.invalid", Proxy: proxy.URL, APIKey: "secret"}).TestConnection(context.Background())
@@ -222,5 +223,104 @@ func TestSystemOneReviewAndConnectionTest(t *testing.T) {
 	}
 	if _, _, err := c.TestConnection(context.Background()); err != nil {
 		t.Fatalf("connection test: %v", err)
+	}
+}
+
+func TestEndpointNormalizesAndValidatesBaseURL(t *testing.T) {
+	for _, tc := range []struct{ base, want string }{
+		{"", "https://api.typesafe.ai/v1/systemone"},
+		{"https://example.test/", "https://example.test/v1/systemone"},
+		{"https://example.test/v1/", "https://example.test/v1/systemone"},
+		{"https://example.test/v1/systemone", "https://example.test/v1/systemone"},
+		{"http://example.test/gateway/v1", "http://example.test/gateway/v1/systemone"},
+	} {
+		got, err := (Config{BaseURL: tc.base}).endpoint()
+		if err != nil || got != tc.want {
+			t.Fatalf("base=%q got=%q err=%v", tc.base, got, err)
+		}
+	}
+	for _, base := range []string{"/v1", "/v1/systemone", "ftp://example.test/v1", "https://example.test?secret=x", "https://example.test/#fragment"} {
+		if _, err := (Config{BaseURL: base}).endpoint(); err == nil {
+			t.Errorf("accepted invalid URL %q", base)
+		}
+	}
+}
+
+func TestListModelsNativeSchemaAndProxy(t *testing.T) {
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/models" {
+			t.Errorf("request = %s %s", r.Method, r.URL)
+		}
+		if r.Header.Get("Authorization") != "Bearer secret" {
+			t.Error("missing authorization")
+		}
+		_, _ = w.Write([]byte(`{"models":[{"name":"jev-latest"},{"name":"jev-preview"},{"name":""}]}`))
+	}))
+	defer proxy.Close()
+	for _, suffix := range []string{"", "/v1", "/v1/systemone"} {
+		models, err := (Config{BaseURL: "http://target.invalid" + suffix, Proxy: proxy.URL, APIKey: " secret "}).ListModels(context.Background())
+		if err != nil || strings.Join(models, ",") != "jev-latest,jev-preview" {
+			t.Fatalf("models=%v err=%v", models, err)
+		}
+	}
+}
+
+func TestListModelsErrorsAndEmptyList(t *testing.T) {
+	for _, tc := range []struct {
+		code    int
+		body    string
+		wantErr bool
+	}{
+		{401, `{"detail":"invalid key"}`, true},
+		{200, `not json`, true},
+		{200, `{"models":[]}`, false},
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(tc.code); _, _ = w.Write([]byte(tc.body)) }))
+		models, err := (Config{BaseURL: srv.URL, APIKey: "key"}).ListModels(context.Background())
+		srv.Close()
+		if (err != nil) != tc.wantErr || (!tc.wantErr && models == nil) {
+			t.Fatalf("status=%d models=%v err=%v", tc.code, models, err)
+		}
+	}
+}
+
+func TestDecisionRejectsMalformedChoiceAnswer(t *testing.T) {
+	valid := func() Answer {
+		return Answer{Type: "choice", Choice: "allow", Confidence: 0.9, Probabilities: map[string]float64{"allow": 0.9, "ask": 0.05, "deny": 0.05}}
+	}
+	for _, mutate := range []func(*Answer){
+		func(a *Answer) { a.Type = "score" },
+		func(a *Answer) { a.Confidence = 1.1 },
+		func(a *Answer) { a.Confidence = -0.1 },
+		func(a *Answer) { a.Confidence = math.NaN() },
+		func(a *Answer) { a.Confidence = math.Inf(1) },
+		func(a *Answer) { a.Probabilities = nil },
+		func(a *Answer) { delete(a.Probabilities, "deny") },
+		func(a *Answer) { a.Probabilities["allow"] = 1.1 },
+		func(a *Answer) { a.Probabilities["ask"] = math.NaN() },
+	} {
+		a := valid()
+		mutate(&a)
+		if _, err := DecisionFromResponse(Response{Answers: map[string]Answer{"decision": a}}, 0, 1); err == nil {
+			t.Fatalf("accepted malformed answer %+v", a)
+		}
+	}
+	for _, raw := range []string{
+		`{"answers":{"decision":{"type":"choice","choice":"allow","probabilities":{"allow":1,"ask":0,"deny":0}}}}`,
+		`{"answers":{"decision":{"type":"choice","choice":"allow","confidence":null,"probabilities":{"allow":1,"ask":0,"deny":0}}}}`,
+	} {
+		var resp Response
+		if err := json.Unmarshal([]byte(raw), &resp); err == nil {
+			t.Fatalf("accepted missing confidence: %s", raw)
+		}
+	}
+}
+
+func TestTruncateUTF8AlwaysHonorsByteLimit(t *testing.T) {
+	for limit := 0; limit < 80; limit++ {
+		got, _ := truncateUTF8(strings.Repeat("审查", 30), limit)
+		if len(got) > limit || !utf8.ValidString(got) {
+			t.Fatalf("limit=%d bytes=%d", limit, len(got))
+		}
 	}
 }

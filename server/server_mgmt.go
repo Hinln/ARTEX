@@ -24,6 +24,7 @@ import (
 
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/intercept/jev"
 	"github.com/Autumn-27/artex/llmhttp"
 	"github.com/Autumn-27/norma/llm"
 	"github.com/Autumn-27/norma/skill"
@@ -2020,10 +2021,6 @@ func (s *Server) pgListModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	provider := strings.TrimSpace(req.Provider)
-	if provider == "jev" {
-		writeErr(w, http.StatusBadRequest, "Jev / System One 不提供模型列表，请直接使用默认模型 jev-latest")
-		return
-	}
 	// Resolve API key: form input > profile stored key.
 	apiKey := strings.TrimSpace(req.APIKey)
 	if apiKey == "" && req.ProfileID != nil {
@@ -2033,6 +2030,27 @@ func (s *Server) pgListModels(w http.ResponseWriter, r *http.Request) {
 	}
 	if apiKey == "" {
 		writeJSON(w, 200, map[string]any{"ok": false, "error": "未提供 API Key"})
+		return
+	}
+
+	if provider == "jev" {
+		baseURL, proxy := strings.TrimSpace(req.BaseURL), strings.TrimSpace(req.Proxy)
+		if req.ProfileID != nil {
+			if p, err := s.m.pg.ProfileByID(*req.ProfileID); err == nil && p != nil {
+				if baseURL == "" {
+					baseURL = p.BaseURL
+				}
+				if proxy == "" {
+					proxy = p.Proxy
+				}
+			}
+		}
+		models, err := (jev.Config{BaseURL: baseURL, APIKey: apiKey, Proxy: proxy}).ListModels(r.Context())
+		if err != nil {
+			writeJSON(w, 200, map[string]any{"ok": false, "error": err.Error()})
+			return
+		}
+		writeJSON(w, 200, map[string]any{"ok": true, "models": models})
 		return
 	}
 

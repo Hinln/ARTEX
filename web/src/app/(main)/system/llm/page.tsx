@@ -529,9 +529,9 @@ function ProfileSheet({
                     variant="outline"
                     size="icon"
                     className="shrink-0"
-                    disabled={loadingModels || format === "jev"}
+                    disabled={loadingModels}
                     onClick={loadModels}
-                    title={format === "jev" ? "Jev 使用固定默认模型 jev-latest，不提供模型列表" : "从 API 加载可用模型"}
+                    title="从 API 加载可用模型"
                   >
                     {loadingModels ? <Loader2Icon className="animate-spin" /> : <RefreshCwIcon />}
                   </Button>
@@ -556,7 +556,7 @@ function ProfileSheet({
               </Popover>
             </div>
             {format === "jev" && (
-              <p className="text-muted-foreground text-xs">Jev / System One 不提供模型列表，默认模型为 <code className="font-mono">jev-latest</code>。</p>
+              <p className="text-muted-foreground text-xs">Jev / System One 支持加载账号可用模型，默认模型为 <code className="font-mono">jev-latest</code>。</p>
             )}
           </div>
 
