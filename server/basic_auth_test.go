@@ -273,7 +273,7 @@ func TestBasicAuthGate(t *testing.T) {
 			if w.Code != tc.want {
 				t.Fatalf("status=%d want %d: %s", w.Code, tc.want, w.Body.String())
 			}
-			if w.Code == 401 && w.Header().Get("WWW-Authenticate") != `Basic realm="ARTEX", charset="UTF-8"` {
+			if w.Code == 401 && w.Header().Get("WWW-Authenticate") != `Basic realm="Restricted", charset="UTF-8"` {
 				t.Fatal("missing browser challenge")
 			}
 		})

@@ -48,7 +48,7 @@ function MainContentInner({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     api
-      .health()
+      .version()
       .then((h) => setVersion((h.version ?? "").replace(/^v(?=\d)/, "")))
       .catch(() => setVersion(""));
   }, []);

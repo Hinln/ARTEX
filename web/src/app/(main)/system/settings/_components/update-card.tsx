@@ -43,7 +43,7 @@ export function UpdateCard() {
   const [info, setInfo] = React.useState<UpdateCheck | null>(null);
   const [checking, setChecking] = React.useState(true);
   const [progress, setProgress] = React.useState<UpdateProgress | null>(null);
-  // 与 progress 分开：暂存完成后进程就没了，SSE 会断，此时要切到轮询 /api/health。
+  // 与 progress 分开：暂存完成后进程就没了，SSE 会断，此时要切到轮询 /api/version。
   const [restarting, setRestarting] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
 
@@ -116,7 +116,7 @@ export function UpdateCard() {
     }
   };
 
-  // 轮询 /api/health 直到版本号变化。
+  // 携带管理员 JWT 轮询 /api/version 直到版本号变化。
   //
   // 判据必须是"版本变了"而不是"能连上了"：换装过程中旧版本会短暂地重新起来一次
   // （那一次只负责把 artex.new 换上去然后立刻退出），只看连通性会误判成功。
@@ -126,15 +126,12 @@ export function UpdateCard() {
     while (Date.now() < deadline) {
       await sleep(2000);
       try {
-        const r = await fetch("/api/health", { cache: "no-store" });
-        if (r.ok) {
-          const j = (await r.json()) as { version?: string };
-          if (j.version && j.version !== fromVersion) {
-            toast.success(`已更新到 ${j.version}，正在重新加载页面`);
-            await sleep(800);
-            window.location.reload();
-            return;
-          }
+        const { version } = await api.version();
+        if (version && version !== fromVersion) {
+          toast.success(`已更新到 ${version}，正在重新加载页面`);
+          await sleep(800);
+          window.location.reload();
+          return;
         }
       } catch {
         // 重启窗口内连不上是预期的，继续轮询。
@@ -172,7 +169,7 @@ export function UpdateCard() {
       streamRef.current = es;
       es.onerror = () => {
         // 进程退出时 SSE 必然断开。如果已经进入等待重启，这属于正常现象，
-        // 交给 /api/health 轮询继续判定即可。
+        // 交给 /api/version 轮询继续判定即可。
         // EventSource 自动重连，恢复服务端保存的当前进度。
       };
       return es;
