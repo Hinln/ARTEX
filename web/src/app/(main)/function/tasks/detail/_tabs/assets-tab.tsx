@@ -589,7 +589,7 @@ export function AssetsTab({ taskId }: { taskId: string }) {
 
         <TabsContent value="service" className="mt-0 flex min-h-0 flex-1 flex-col">
           <AssetCard
-            cols={["地址 / 服务", "状态码", "标题", "响应长度", "指纹", "认证", "来源", "操作"]}
+            cols={["地址 / 服务", "域名", "IP", "端口", "状态码", "标题", "响应长度", "指纹", "认证", "来源", "操作"]}
             {...commonCardProps}
           >
             {rows.map((asset) => {
@@ -602,6 +602,11 @@ export function AssetsTab({ taskId }: { taskId: string }) {
                   <TableCell className="max-w-xs truncate font-mono text-xs" title={address}>
                     {address || "—"}
                   </TableCell>
+                  <TableCell className="max-w-48 truncate font-mono text-xs" title={asset.domain}>
+                    {asset.domain || "—"}
+                  </TableCell>
+                  <TableCell className="whitespace-nowrap font-mono text-xs">{asset.ip || "—"}</TableCell>
+                  <TableCell className="font-mono text-xs tabular-nums">{asset.port ?? "—"}</TableCell>
                   <TableCell>
                     {asset.status_code != null ? (
                       <span
