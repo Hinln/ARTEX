@@ -115,7 +115,7 @@ func TestBasicAuthBlockedSaveDoesNotBlockRequests(t *testing.T) {
 				h := s.requireBasicAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) }))
 				for _, path := range []string{"/", "/_next/static/app.js", "/api/tasks", "/api/health"} {
 					r := httptest.NewRequest(http.MethodGet, path, nil)
-					if enabled && path != "/api/health" {
+					if enabled {
 						r.AddCookie(initial.Result().Cookies()[0])
 					}
 					w := httptest.NewRecorder()
@@ -126,7 +126,11 @@ func TestBasicAuthBlockedSaveDoesNotBlockRequests(t *testing.T) {
 					}
 				}
 				w := httptest.NewRecorder()
-				s.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/health", nil))
+				r := httptest.NewRequest(http.MethodGet, "/api/health", nil)
+				if enabled {
+					r.AddCookie(initial.Result().Cookies()[0])
+				}
+				s.Handler().ServeHTTP(w, r)
 				if w.Code != http.StatusOK {
 					reads <- errors.New("health handler unavailable during save")
 					return
@@ -247,7 +251,9 @@ func TestBasicAuthGate(t *testing.T) {
 		{name: "asset challenge", path: "/_next/static/app.js", want: 401},
 		{name: "auth API challenge", path: "/api/auth/status", want: 401},
 		{name: "check challenge", path: "/api/basic-auth/check", want: 401},
-		{name: "health exempt", path: "/api/health", want: 204},
+		{name: "health challenge", path: "/api/health", want: 401},
+		{name: "health credentials", path: "/api/health", user: "entry", pass: "密码:test-pass", want: 204},
+		{name: "health gate cookie", path: "/api/health", cookie: cookie, want: 204},
 		{name: "health prefix not exempt", path: "/api/health/anything", want: 401},
 		{name: "wrong password", path: "/login", user: "entry", pass: "wrong", want: 401},
 		{name: "wrong user", path: "/login", user: "wrong", pass: "密码:test-pass", want: 401},
@@ -273,7 +279,7 @@ func TestBasicAuthGate(t *testing.T) {
 			if w.Code != tc.want {
 				t.Fatalf("status=%d want %d: %s", w.Code, tc.want, w.Body.String())
 			}
-			if w.Code == 401 && w.Header().Get("WWW-Authenticate") != `Basic realm="ARTEX", charset="UTF-8"` {
+			if w.Code == 401 && w.Header().Get("WWW-Authenticate") != `Basic realm="Restricted", charset="UTF-8"` {
 				t.Fatal("missing browser challenge")
 			}
 		})

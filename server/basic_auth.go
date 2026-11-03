@@ -125,10 +125,9 @@ func (s *Server) setBasicAuthCookie(w http.ResponseWriter, r *http.Request, cfg 
 func (s *Server) requireBasicAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cfg := s.basicAuth.snapshot()
-		// Health probes stay public; CORS preflight contains no credentials and
-		// the API CORS handler returns 204 without invoking any business handler.
-		if !cfg.Enabled || (r.URL.Path == "/api/health" && (r.Method == "GET" || r.Method == "HEAD")) ||
-			(r.Method == "OPTIONS" && strings.HasPrefix(r.URL.Path, "/api/")) {
+		// CORS preflight contains no credentials; the API CORS handler returns
+		// 204 without invoking any business handler, including health probes.
+		if !cfg.Enabled || (r.Method == "OPTIONS" && strings.HasPrefix(r.URL.Path, "/api/")) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -140,7 +139,7 @@ func (s *Server) requireBasicAuth(next http.Handler) http.Handler {
 		username, password, ok := r.BasicAuth()
 		if !ok || len(password) > maxPasswordBytes || username != cfg.Username ||
 			bcrypt.CompareHashAndPassword([]byte(cfg.PasswordHash), []byte(password)) != nil {
-			w.Header().Set("WWW-Authenticate", `Basic realm="ARTEX", charset="UTF-8"`)
+			w.Header().Set("WWW-Authenticate", `Basic realm="Restricted", charset="UTF-8"`)
 			writeErr(w, http.StatusUnauthorized, "请先完成 HTTP Basic Auth 验证")
 			return
 		}

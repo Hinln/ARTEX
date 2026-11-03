@@ -318,8 +318,9 @@ function schedulePayload(input: ScheduleInput) {
 }
 
 export const api = {
-  // 后端应用版本号（release 时由 ldflags 注入，默认 "dev"）。
-  health: () => get<{ ok: boolean; service: string; version: string }>("/health"),
+  // 健康检查受可选 Basic Auth 保护且不返回应用名称或版本；版本号仅向已登录管理员提供。
+  health: () => get<{ ok: boolean }>("/health"),
+  version: () => http<{ version: string }>("/version", { cache: "no-store" }),
   systemMetrics: () => get<SystemMetrics>("/system/metrics"),
 
   // ---- auth ----

@@ -246,7 +246,15 @@ jobs:
           trap 'docker logs artex-smoke; docker rm -f artex-smoke' EXIT
           curl --fail --retry 30 --retry-connrefused --retry-delay 2 --max-time 3 \
             http://127.0.0.1:8787/api/health > /tmp/artex-health.json
-          jq -e --arg version "${RELEASE_TAG#v}" '.ok == true and .version == $version' /tmp/artex-health.json
+          jq -e '. == {"ok": true}' /tmp/artex-health.json
+          curl --fail -H 'Content-Type: application/json' \
+            --data '{"password":"smoke-test-admin-password"}' \
+            http://127.0.0.1:8787/api/auth/init > /tmp/artex-auth.json
+          token=$(jq -er '.token' /tmp/artex-auth.json)
+          echo "::add-mask::$token"
+          curl --fail -H "Authorization: Bearer $token" \
+            http://127.0.0.1:8787/api/version > /tmp/artex-version.json
+          jq -e --arg version "${RELEASE_TAG#v}" '.version == $version' /tmp/artex-version.json
           curl --fail http://127.0.0.1:8787/ > /tmp/artex-index.html
           grep -qi '<!doctype html' /tmp/artex-index.html
       - name: Push tested architecture image
