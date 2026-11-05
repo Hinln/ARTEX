@@ -578,7 +578,7 @@ func (s *Server) proxyPoolTickLocked(forceHealth bool) proxyPoolTickOutcome {
 					return
 				}
 				defer func() { <-sem }()
-				res := s.runProxyProbe(serverContext(s), e.RawURL, "", defaultEgressProbes, proxyPoolProbeTimeout)
+				res := s.runProxyProbe(serverContext(s), e.RawURL, "", s.m.egressProbes(), proxyPoolProbeTimeout)
 				s.m.markProxyProbe(e.ID, res)
 				probeMu.Lock()
 				probeResults[e.ID] = res.OK
@@ -695,7 +695,7 @@ func (s *Server) handleProxyPoolFailure(cause error) bool {
 	if cur == "" {
 		return false
 	}
-	res := s.runProxyProbe(serverContext(s), cur, "", defaultEgressProbes, proxyPoolProbeTimeout)
+	res := s.runProxyProbe(serverContext(s), cur, "", s.m.egressProbes(), proxyPoolProbeTimeout)
 	if res.OK {
 		return false
 	}
@@ -1134,7 +1134,7 @@ func (s *Server) testProxyPoolEntry(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	for _, e := range s.m.proxyPoolEntries() {
 		if e.ID == id && e.Enabled && strings.TrimSpace(e.RawURL) != "" {
-			res := s.runProxyProbe(r.Context(), e.RawURL, "", defaultEgressProbes, proxyPoolProbeTimeout)
+			res := s.runProxyProbe(r.Context(), e.RawURL, "", s.m.egressProbes(), proxyPoolProbeTimeout)
 			s.m.markProxyProbe(id, res)
 			if res.OK {
 				s.reconcileProxyPoolAfterProbe(id == s.m.proxyPoolActiveID())

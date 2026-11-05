@@ -3361,6 +3361,7 @@ export const settings: Settings = {
 	proxy_health_cooldown_seconds: 60,
 	proxy_health_check_interval_seconds: 30,
 	show_egress_ip: false,
+	egress_probe_url: "",
   python_interpreter: "/usr/bin/python3",
   workers: 3,
   worker_pools: [],

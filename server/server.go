@@ -3699,6 +3699,7 @@ func (s *Server) settingsPayload() map[string]any {
 		"proxy_reconnect_max_attempts":        func() int { n, _ := s.proxyReconnectConfig(); return n }(),
 		"proxy_reconnect_interval_seconds":    func() int { _, d := s.proxyReconnectConfig(); return int(d / time.Second) }(),
 		"show_egress_ip":                      s.m.pg.GetBool(settingShowEgressIP, false),
+		"egress_probe_url":                    s.m.EgressProbeURL(),
 		"python_interpreter":                  strings.TrimSpace(pyStored), // 用户/自动设的值(空=用运行时检测)
 		"workers":                             s.m.Workers(),               // 并发工作 agent 数(默认3)；对之后启动的任务生效
 		"worker_pools":                        s.m.WorkerPools(),           // 非空时按池顺序绑定 worker 会话
@@ -3791,6 +3792,7 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		ProxyReconnectMax      *int          `json:"proxy_reconnect_max_attempts"`
 		ProxyReconnectInterval *int          `json:"proxy_reconnect_interval_seconds"`
 		ShowEgressIP           *bool         `json:"show_egress_ip"`     // 在顶栏显示直连/全局代理出口 IP；默认关
+		EgressProbeURL         *string       `json:"egress_probe_url"`   // null=不改；空串=默认公共探测服务
 		PythonInterp           *string       `json:"python_interpreter"` // 自定义脚本工具的 python 解释器路径
 		Workers                *int          `json:"workers"`            // 并发工作 agent 数(>0)；对之后启动的任务生效
 		WorkerPools            *[]WorkerPool `json:"worker_pools"`
@@ -3815,6 +3817,18 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, 400, err.Error())
 		return
+	}
+	if req.EgressProbeURL != nil {
+		value := strings.TrimSpace(*req.EgressProbeURL)
+		if value != "" {
+			checked, err := validateProbeURL(value)
+			if err != nil {
+				writeErr(w, 400, err.Error())
+				return
+			}
+			value = checked
+		}
+		req.EgressProbeURL = &value
 	}
 	if req.ConstraintsInjectPlanner != nil {
 		if err := s.m.pg.SetBool(settingConstraintsInjectPlanner, *req.ConstraintsInjectPlanner); err != nil {
@@ -4058,6 +4072,12 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		select {
 		case s.proxyPoolWake <- struct{}{}:
 		default:
+		}
+	}
+	if req.EgressProbeURL != nil {
+		if err := s.m.pg.SetSetting(settingEgressProbeURL, *req.EgressProbeURL); err != nil {
+			writeErr(w, 500, err.Error())
+			return
 		}
 	}
 	if req.ShowEgressIP != nil {
