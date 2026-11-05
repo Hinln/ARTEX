@@ -60,6 +60,54 @@ func TestTaskMetadataPatchReturnsRenameAndPin(t *testing.T) {
 	}
 }
 
+func TestTaskMetadataPatchGlobalAssetSharing(t *testing.T) {
+	m, err := NewManager(t.TempDir(), "")
+	if err != nil {
+		t.Skipf("postgres unavailable: %v", err)
+	}
+	defer m.Close()
+	task, err := m.CreateTask("sharing patch", "goal", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := strconv.ParseInt(task.ID, 10, 64)
+	defer m.pg.DeleteTask(id)
+	ctx, cancel := context.WithCancel(context.Background())
+	s := New(ctx, m, t.TempDir(), t.TempDir(), t.TempDir())
+	defer func() { cancel(); s.Close() }()
+	token, err := signJWT(s.jwtKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, enabled := range []bool{true, false} {
+		body, _ := json.Marshal(map[string]any{"share_global_assets": enabled})
+		req := httptest.NewRequest(http.MethodPatch, "/api/tasks/"+task.ID, bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("patch %d: %s", rec.Code, rec.Body.String())
+		}
+		var result struct {
+			Shared *bool `json:"share_global_assets"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+			t.Fatal(err)
+		}
+		saved, err := m.pg.GetTask(id)
+		if err != nil || saved.ShareGlobalAssets != enabled || result.Shared == nil || *result.Shared != enabled || task.lifecycleSnapshot().ShareGlobalAssets != enabled {
+			t.Fatalf("sharing not propagated: %s %+v %v", rec.Body.String(), saved, err)
+		}
+	}
+	req := httptest.NewRequest(http.MethodPatch, "/api/tasks/"+task.ID, strings.NewReader(`{"share_global_assets":"true"}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != 400 {
+		t.Fatalf("invalid boolean status=%d", rec.Code)
+	}
+}
+
 func TestConversationBatchDeleteReportsMissing(t *testing.T) {
 	m, err := NewManager(t.TempDir(), "")
 	if err != nil {

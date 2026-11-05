@@ -300,7 +300,7 @@ func (s *AssetStore) CoverageEnabled(taskID int64) bool {
 }
 
 // task_scope→assets match predicate, reused by the count / by-type / untested queries. $1=taskID.
-const covTargetCTE = `
+const covTargetCTE = directTaskContextCTE + taskAssetVisibilityCTE + `,
 target AS (
   SELECT DISTINCT a.id, a.type,
          COALESCE(a.url, a.domain, a.ip, a.app_name, a.root_domain, '') AS label
@@ -315,6 +315,7 @@ target AS (
          OR lower(regexp_replace(COALESCE(a.app_icp,''), '[[:space:]]+', '', 'g')) = ts.value
        ))
   )
+  WHERE a.id IN (SELECT id FROM visible_assets)
 ),
 tested AS (
   SELECT DISTINCT ea.asset_id
@@ -554,8 +555,8 @@ ORDER BY a.id`, taskID)
 	}
 	for root := range missingRoots {
 		var id, companyID int64
-		err := s.db.QueryRow(`SELECT id, COALESCE(company_id,0) FROM assets
-WHERE type='root_domain' AND domain=$1 LIMIT 1`, root).Scan(&id, &companyID)
+		err := s.db.QueryRow(`WITH `+scopeTargetCTE+` SELECT id, COALESCE(company_id,0) FROM assets
+WHERE type='root_domain' AND domain=$2 AND id IN (SELECT id FROM target) LIMIT 1`, taskID, root).Scan(&id, &companyID)
 		var node CoverageGraphNode
 		if err == nil && id > 0 {
 			node = CoverageGraphNode{Key: assetKey(id), Kind: "root_domain", AssetID: id,

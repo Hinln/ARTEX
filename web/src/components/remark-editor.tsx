@@ -8,6 +8,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { MAX_TASK_REMARK_RUNES } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -165,17 +166,23 @@ function InlineTextEditor({
           <span className="text-muted-foreground">{emptyLabel}</span>
         )}
       </button>
-      <Button
-        type="button"
-        variant="ghost"
-        size="icon-xs"
-        className="shrink-0 opacity-100 transition-opacity [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-focus-within:opacity-100 [@media(hover:hover)]:group-hover:opacity-100 [@media(hover:hover)]:group-focus-within/inline-editor:opacity-100 [@media(hover:hover)]:group-hover/inline-editor:opacity-100"
-        aria-label={`编辑${label}的${fieldName}`}
-        title={`编辑${fieldName}`}
-        onClick={startEditing}
-      >
-        <PencilIcon />
-      </Button>
+      <Tooltip delayDuration={200}>
+        <TooltipTrigger asChild>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-xs"
+            className="shrink-0 opacity-100 transition-opacity [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-focus-within:opacity-100 [@media(hover:hover)]:group-hover:opacity-100 [@media(hover:hover)]:group-focus-within/inline-editor:opacity-100 [@media(hover:hover)]:group-hover/inline-editor:opacity-100"
+            aria-label={`编辑${label}的${fieldName}`}
+            onClick={startEditing}
+          >
+            <PencilIcon />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent side="top" sideOffset={6}>
+          编辑{fieldName}：输入完成后按 Enter 或点击其他位置保存，按 Esc 取消。
+        </TooltipContent>
+      </Tooltip>
     </div>
   );
 }

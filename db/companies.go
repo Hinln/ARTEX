@@ -293,6 +293,55 @@ ORDER BY c.name`)
 	return out, nil
 }
 
+// ListCompaniesForTask exposes only task-visible ownership and explicitly
+// associated companies. Isolated tasks never receive unrelated company scopes.
+func (s *CompanyStore) ListCompaniesForTask(taskID int64) ([]*CompanyWithScope, error) {
+	if taskID <= 0 {
+		return s.ListCompanies()
+	}
+	var shared bool
+	if err := s.db.QueryRow(`SELECT share_global_assets FROM tasks WHERE id=$1 AND deleted_at IS NULL`, taskID).Scan(&shared); err != nil {
+		return nil, err
+	}
+	if shared {
+		return s.ListCompanies()
+	}
+	rows, err := s.db.Query(`WITH `+directTaskContextCTE+taskAssetVisibilityCTE+`
+ SELECT c.id,c.name,c.nkey,c.logo,c.created_at::text,c.updated_at::text,COUNT(a.id),
+ EXISTS(SELECT 1 FROM task_scope ts JOIN context_tasks ctx ON ctx.task_id=ts.task_id WHERE ts.company_id=c.id AND ts.kind='company')
+ FROM companies c LEFT JOIN assets a ON a.company_id=c.id AND a.id IN (SELECT id FROM visible_assets)
+ WHERE a.id IS NOT NULL OR EXISTS(SELECT 1 FROM task_scope ts JOIN context_tasks ctx ON ctx.task_id=ts.task_id WHERE ts.company_id=c.id AND ts.kind='company')
+ GROUP BY c.id ORDER BY c.name`, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []*CompanyWithScope{}
+	associated := map[int64]bool{}
+	for rows.Next() {
+		c := &CompanyWithScope{Scope: []ScopeRule{}}
+		var explicit bool
+		if err := rows.Scan(&c.ID, &c.Name, &c.NKey, &c.Logo, &c.CreatedAt, &c.UpdatedAt, &c.AssetCount, &explicit); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+		associated[c.ID] = explicit
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// Only explicit company associations grant access to the company's scope.
+	for _, c := range out {
+		if associated[c.ID] {
+			c.Scope, err = s.GetScope(c.ID)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	return out, nil
+}
+
 // GetScope returns all scope rules for a company.
 func (s *CompanyStore) GetScope(companyID int64) ([]ScopeRule, error) {
 	rows, err := s.db.Query(`
