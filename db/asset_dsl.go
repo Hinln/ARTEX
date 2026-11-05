@@ -490,6 +490,7 @@ func (s *AssetStore) CountDSL(dsl, typ string, taskID int64) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	where = "(" + where + ")"
 	if typ != "" {
 		args = append(args, typ)
 		where += fmt.Sprintf(" AND type = $%d", len(args))
@@ -522,6 +523,7 @@ func (s *AssetStore) QueryDSL(dsl, typ string, taskID int64, limit, offset int) 
 	if err != nil {
 		return nil, err
 	}
+	where = "(" + where + ")"
 	if typ != "" {
 		args = append(args, typ)
 		where += fmt.Sprintf(" AND type = $%d", len(args))
@@ -550,13 +552,9 @@ func (s *AssetStore) QueryDSL(dsl, typ string, taskID int64, limit, offset int) 
 	return assets, nil
 }
 
-// QueryDSLInScope is QueryDSL restricted to assets that BELONG to taskID's (and its
-// direct source tasks') declared scope — membership, not literal value: a
-// root_domain scope returns every subdomain / service / endpoint under it. This is
-// the agent-facing list_assets path, so an agent queries the task's relevant assets
-// instead of the whole shared库. taskID<=0 (non-task contexts: Auto / pentest / chat)
-// has no scope to honor and falls back to the plain global QueryDSL. Rows carry the
-// same per-task source metadata as QueryByTask.
+// QueryDSLInScope applies the task's live asset-sharing policy. By default only
+// owned and directly related assets are visible; sharing enables global reads.
+// Non-task contexts (taskID<=0) retain global reads.
 func (s *AssetStore) QueryDSLInScope(dsl, typ string, taskID int64, limit, offset int) ([]*Asset, error) {
 	if taskID <= 0 {
 		return s.QueryDSL(dsl, typ, 0, limit, offset)
@@ -578,6 +576,7 @@ func (s *AssetStore) QueryDSLInScope(dsl, typ string, taskID int64, limit, offse
 	}
 	args := []any{taskID}
 	args = append(args, dslArgs...)
+	where = "(" + where + ")"
 	if typ != "" {
 		args = append(args, typ)
 		where += fmt.Sprintf(" AND type = $%d", len(args))
@@ -601,10 +600,8 @@ func (s *AssetStore) QueryDSLInScope(dsl, typ string, taskID int64, limit, offse
 	return assets, nil
 }
 
-// GetByIDsInScope is GetByIDs restricted to ids that BELONG to taskID's (and its
-// direct source tasks') declared scope, so an agent cannot reach out-of-scope
-// assets by id. taskID<=0 (non-task contexts) falls back to the global GetByIDs.
-// Out-of-scope ids are silently dropped from the result (not an error).
+// GetByIDsInScope applies the same visibility policy to explicit ID reads.
+// Invisible IDs are omitted. Non-task contexts retain global reads.
 func (s *AssetStore) GetByIDsInScope(taskID int64, ids []int64) ([]*Asset, error) {
 	if taskID <= 0 {
 		return s.GetByIDs(ids)

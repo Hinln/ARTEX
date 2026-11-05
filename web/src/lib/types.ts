@@ -62,6 +62,7 @@ export interface Task {
   source_task_ids?: string[]; // directly related tasks inherited as read-only context
   archive_blocked_by_task_id?: string; // live direct dependent that must be archived first
   company_ids?: number[]; // associated company scopes; current company assets join the task at creation
+  share_global_assets?: boolean; // opt-in global asset visibility; default false
   coverage_enabled?: boolean; // 资产覆盖度功能开关(创建时定,默认开)；false=不计算/不展示覆盖度
 }
 

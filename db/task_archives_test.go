@@ -133,7 +133,7 @@ func TestTaskArchiveDatabaseRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	task, err := d.CreateTaskWithOptions("archive database roundtrip", "restore exact graph", TaskCreateOptions{
-		Name: "cold task", WorkerCount: 7,
+		Name: "cold task", WorkerCount: 7, ShareGlobalAssets: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -299,7 +299,7 @@ VALUES($1,$2,0,'quota_exhausted','balance exhausted',$3,$4,$3)`, task.ID, llmPro
 	if err != nil || live == nil {
 		t.Fatalf("restored task = %+v, %v", live, err)
 	}
-	if live.Name != "cold task" || live.Remark != remark || live.WorkerCount != 7 || !live.Paused {
+	if live.Name != "cold task" || live.Remark != remark || live.WorkerCount != 7 || !live.ShareGlobalAssets || !live.Paused {
 		t.Fatalf("restored task metadata mismatch: %+v", live)
 	}
 	if err := d.QueryRow(`SELECT count(*) FROM exploration_nodes WHERE exploration_id=$1`, task.ExplorationID).Scan(&nodes); err != nil {

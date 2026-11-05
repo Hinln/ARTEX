@@ -69,7 +69,8 @@ type TaskDTO struct {
 	ArchiveBlockedBy   string             `json:"archive_blocked_by_task_id,omitempty"`
 	CompanyIDs         []int64            `json:"company_ids"`
 	CoverageEnabled    bool               `json:"coverage_enabled"` // 资产覆盖度功能开关(创建时定)
-	WorkerCount        int                `json:"worker_count"`     // 本任务 Worker 数;0=用全局默认
+	ShareGlobalAssets  bool               `json:"share_global_assets"`
+	WorkerCount        int                `json:"worker_count"` // 本任务 Worker 数;0=用全局默认
 }
 
 type ProxyReconnectDTO struct {
@@ -163,6 +164,7 @@ func taskDTO(t *Task, status string) TaskDTO {
 		SourceTaskIDs:      sourceIDs,
 		CompanyIDs:         lifecycle.CompanyIDs,
 		CoverageEnabled:    t.CoverageEnabled,
+		ShareGlobalAssets:  lifecycle.ShareGlobalAssets,
 		WorkerCount:        t.WorkerCount,
 	}
 }

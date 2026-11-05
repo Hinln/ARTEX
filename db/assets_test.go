@@ -1000,127 +1000,158 @@ func TestAssetIPRejectsHostname(t *testing.T) {
 	deleteAsset(d, id)
 }
 
-// TestQueryDSLInScopeMembership pins the agent-facing list_assets behavior: it
-// returns assets that BELONG to the task's declared scope (membership, not literal
-// value) — a root_domain scope surfaces its subdomains/services/endpoints even when
-// those rows were produced by a different task — and honors ip/cidr scope for
-// IP-literal hosts (the try_inet(domain) arm). Out-of-scope assets, including by id,
-// are excluded. Direct source tasks' scope is included.
+// TestQueryDSLInScopeMembership verifies that scope matching alone cannot import
+// unrelated assets, and that the live opt-in switch applies to DSL and ID reads.
 func TestQueryDSLInScopeMembership(t *testing.T) {
-	d, assets, _ := testSetup(t)
-	defer d.Close()
-
-	task, err := d.CreateTask("scope membership", "goal", nil, 0, 0)
+	d, assets, companies := testSetup(t)
+	t.Cleanup(func() { _ = d.Close() })
+	// Older asset fixtures tag synthetic task IDs 1/2; use a task with no existing membership.
+	task, err := d.CreateTask("isolated task", "goal", nil, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	src, err := d.CreateTask("scope source", "goal", nil, 0, 0)
+	source, err := d.CreateTaskWithOptions("source", "goal", TaskCreateOptions{ShareGlobalAssets: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = d.DeleteTask(task.ID); _ = d.DeleteTask(src.ID) })
-	// task ← src is a direct source relation.
-	if _, err := d.Exec(`INSERT INTO task_relations(task_id, source_task_id) VALUES ($1,$2)`, task.ID, src.ID); err != nil {
-		t.Fatal(err)
-	}
-
-	stamp := time.Now().UnixNano()
-	root := fmt.Sprintf("sc%d.invalid", stamp)           // in-scope root domain (task)
-	srcRoot := fmt.Sprintf("src%d.invalid", stamp)       // in-scope via source task
-	out := fmt.Sprintf("out%d.invalid", stamp)           // out of every scope
-	marker := fmt.Sprintf("mk%d", stamp)                 // bare-text token present in all rows
-	foreignTask := stamp + 777                           // asset produced by an unrelated task
-
-	// Scope: task owns root; source task owns srcRoot; task owns an IP /24.
-	for _, sc := range []struct {
-		tid  int64
-		kind string
-		dom  string
-		net  string
-	}{
-		{task.ID, "root_domain", root, ""},
-		{src.ID, "root_domain", srcRoot, ""},
-		{task.ID, "ip", "", "198.51.100.0/24"},
-	} {
-		if err := assets.upsertTaskScope(TaskScope{TaskID: sc.tid, Kind: sc.kind, Domain: sc.dom, Net: sc.net}); err != nil {
-			t.Fatalf("seed scope: %v", err)
+	for _, candidate := range []*Task{task, source} {
+		for {
+			var count int
+			if err := d.QueryRow(`SELECT count(*) FROM assets WHERE $1=ANY(task_ids)`, candidate.ID).Scan(&count); err != nil {
+				t.Fatal(err)
+			}
+			if count == 0 {
+				break
+			}
+			shared := candidate.ShareGlobalAssets
+			_ = d.DeleteTask(candidate.ID)
+			replacement, err := d.CreateTaskWithOptions("clean membership", "goal", TaskCreateOptions{ShareGlobalAssets: shared})
+			if err != nil {
+				t.Fatal(err)
+			}
+			*candidate = *replacement
 		}
 	}
-
-	// Insert rows directly so root_domain/task_ids are controlled exactly. Every
-	// in-scope row carries foreignTask in task_ids (never the current task) to prove
-	// membership is by scope, not by producer.
-	type row struct {
-		typ, domain, rootDom, url, method, ip, title string
+	if !source.ShareGlobalAssets || task.ShareGlobalAssets {
+		t.Fatal("incorrect creation defaults")
 	}
-	rows := []row{
-		{"subdomain", "api." + root, root, "", "", "", marker},                        // under task root
-		{"service", "www." + root, root, "https://www." + root + "/", "", "", marker}, // service under task root
-		{"endpoint", "www." + root, root, "https://www." + root + "/a?" + marker + "=1", "GET", "", ""},
-		{"subdomain", "dev." + srcRoot, srcRoot, "", "", "", marker}, // under source-task root
-		{"endpoint", "198.51.100.9", "198.51.100.9", "http://198.51.100.9:8080/" + marker, "GET", "", ""}, // IP-literal host, ip col empty
-		{"subdomain", "x." + out, out, "", "", "", marker},                                                // out of scope
+	if _, err = d.Exec(`INSERT INTO task_relations(task_id,source_task_id) VALUES ($1,$2)`, task.ID, source.ID); err != nil {
+		t.Fatal(err)
 	}
-	var inScopeIDs, outIDs []int64
-	for _, r := range rows {
+	root := fmt.Sprintf("sharing-%d.invalid", time.Now().UnixNano())
+	companyID, _, err := companies.UpsertCompany(root, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []int64
+	insert := func(typ, domain, url string, owner int64) int64 {
+		t.Helper()
 		var id int64
-		if err := d.QueryRow(`INSERT INTO assets(type,domain,root_domain,url,method,ip,page_title,task_ids,last_seen)
-			VALUES ($1,NULLIF($2,''),NULLIF($3,''),NULLIF($4,''),NULLIF($5,''),NULLIF($6,''),NULLIF($7,''),ARRAY[$8]::bigint[],now())
-			RETURNING id`,
-			r.typ, r.domain, r.rootDom, r.url, r.method, r.ip, r.title, foreignTask).Scan(&id); err != nil {
-			t.Fatalf("insert %s: %v", r.domain, err)
+		err := d.QueryRow(`INSERT INTO assets(type,domain,root_domain,url,ip,company_id,task_ids,last_seen)
+   VALUES($1,$2,$3,NULLIF($4,''),'198.51.100.9',$5,ARRAY[$6]::bigint[],now()) RETURNING id`, typ, domain, root, url, companyID, owner).Scan(&id)
+		if err != nil {
+			t.Fatal(err)
 		}
-		if r.rootDom == out {
-			outIDs = append(outIDs, id)
-		} else {
-			inScopeIDs = append(inScopeIDs, id)
-		}
+		ids = append(ids, id)
+		return id
 	}
+	own := insert("subdomain", "www."+root, "", task.ID)
+	inherited := insert("service", "www."+root, "http://www."+root+":8080/", source.ID)
+	foreign := insert("service", "www."+root, "http://www."+root+":9090/", 0)
+	connector := insert("root_domain", root, "", 0)
 	t.Cleanup(func() {
-		_, _ = d.Exec(`DELETE FROM assets WHERE id=ANY($1::bigint[]) OR id=ANY($2::bigint[])`, inScopeIDs, outIDs)
+		_ = d.DeleteTask(task.ID)
+		_ = d.DeleteTask(source.ID)
+		_, _ = assets.DeleteByIDs(ids)
+		_, _ = d.Exec(`DELETE FROM companies WHERE id=$1`, companyID)
 	})
-
-	got, err := assets.QueryDSLInScope(marker, "", task.ID, 50, 0)
+	if err := assets.upsertTaskScope(TaskScope{TaskID: task.ID, Kind: "root_domain", Domain: root}); err != nil {
+		t.Fatal(err)
+	}
+	assertIDs := func(got []*Asset, err error, want ...int64) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+		seen := map[int64]bool{}
+		for _, a := range got {
+			seen[a.ID] = true
+		}
+		if len(seen) != len(want) {
+			t.Fatalf("got ids %v want %v", seen, want)
+		}
+		for _, id := range want {
+			if !seen[id] {
+				t.Fatalf("missing %d from %v", id, seen)
+			}
+		}
+	}
+	query := fmt.Sprintf("id==%d OR id==%d OR id==%d OR id==%d", foreign, own, inherited, connector)
+	got, err := assets.QueryDSLInScope(query, "", task.ID, 50, 0)
+	assertIDs(got, err, own, inherited)
+	got, err = assets.GetByIDsInScope(task.ID, ids)
+	assertIDs(got, err, own, inherited)
+	got, err = assets.QueryDSL(query, "subdomain", task.ID, 50, 0)
+	assertIDs(got, err, own)
+	count, err := assets.CountDSL(query, "subdomain", task.ID)
+	if err != nil || count != 1 {
+		t.Fatalf("OR bypassed count filters: %d %v", count, err)
+	}
+	// A source's opt-in never grants this task global reads.
+	cov, err := assets.TaskCoverageWithSources(task.ID)
+	if err != nil || cov.Denominator != 2 {
+		t.Fatalf("coverage leak: %+v %v", cov, err)
+	}
+	legacy, err := assets.TaskCoverage(task.ID, task.ExplorationID)
+	if err != nil || legacy.Denominator != 2 {
+		t.Fatalf("legacy coverage leak: %+v %v", legacy, err)
+	}
+	graph, err := assets.BuildCoverageGraph(task.ID, task.ExplorationID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	gotIDs := map[int64]bool{}
-	for _, a := range got {
-		gotIDs[a.ID] = true
-	}
-	for _, id := range inScopeIDs {
-		if !gotIDs[id] {
-			t.Fatalf("in-scope asset %d missing from QueryDSLInScope result %v", id, gotIDs)
+	for _, n := range graph.Nodes {
+		if n.AssetID == foreign || n.AssetID == connector {
+			t.Fatalf("foreign graph asset: %+v", n)
 		}
 	}
-	for _, id := range outIDs {
-		if gotIDs[id] {
-			t.Fatalf("out-of-scope asset %d leaked into scoped query", id)
-		}
+	cos, err := companies.ListCompaniesForTask(task.ID)
+	if err != nil || len(cos) != 1 || cos[0].AssetCount != 2 {
+		t.Fatalf("company isolation: %+v %v", cos, err)
 	}
-
-	// GetByIDsInScope: in-scope id returns, out-of-scope id is dropped.
-	mixed := append(append([]int64{}, inScopeIDs[0]), outIDs[0])
-	byID, err := assets.GetByIDsInScope(task.ID, mixed)
+	for _, enabled := range []bool{true, false} {
+		updated, err := d.UpdateTask(task.ID, TaskPatch{ShareGlobalAssets: &enabled})
+		if err != nil || updated.ShareGlobalAssets != enabled {
+			t.Fatalf("update: %+v %v", updated, err)
+		}
+		saved, err := d.GetTask(task.ID)
+		if err != nil || saved.ShareGlobalAssets != enabled {
+			t.Fatalf("reload: %+v %v", saved, err)
+		}
+		want := []int64{own, inherited}
+		if enabled {
+			want = ids
+		}
+		got, err = assets.QueryDSLInScope(query, "", task.ID, 50, 0)
+		assertIDs(got, err, want...)
+		got, err = assets.GetByIDsInScope(task.ID, ids)
+		assertIDs(got, err, want...)
+	}
+	got, err = assets.QueryDSLInScope(query, "", 0, 50, 0)
+	assertIDs(got, err, ids...)
+	empty, err := d.CreateTask("empty task", "goal", nil, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(byID) != 1 || byID[0].ID != inScopeIDs[0] {
-		t.Fatalf("GetByIDsInScope mixed ids → %+v, want only %d", byID, inScopeIDs[0])
-	}
-
-	// taskID<=0 (non-task context) falls back to global: the out-of-scope row is reachable.
-	global, err := assets.QueryDSLInScope(marker, "", 0, 50, 0)
+	defer d.DeleteTask(empty.ID)
+	got, err = assets.QueryDSLInScope(query, "", empty.ID, 50, 0)
+	assertIDs(got, err)
+	// Explicit company selection imports a snapshot even with global sharing off.
+	associated, err := d.CreateTaskWithOptions("company task", "goal", TaskCreateOptions{CompanyIDs: []int64{companyID}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	var sawOut bool
-	for _, a := range global {
-		if a.ID == outIDs[0] {
-			sawOut = true
-		}
-	}
-	if !sawOut {
-		t.Fatalf("taskID<=0 should fall back to global and include out-of-scope asset %d", outIDs[0])
-	}
+	defer d.DeleteTask(associated.ID)
+	got, err = assets.GetByIDsInScope(associated.ID, ids)
+	assertIDs(got, err, ids...)
 }

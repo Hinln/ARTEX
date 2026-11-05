@@ -21,7 +21,25 @@ context_tasks AS (
   WHERE relation.task_id=$1
 )`
 
-const contextCoverageCTE = directTaskContextCTE + `,
+// taskAssetVisibilityCTE reads the policy on every query. Explicit source tasks
+// contribute their own assets, never their global-sharing setting.
+const taskAssetVisibilityCTE = `,
+visible_assets AS (
+  SELECT a.id FROM assets a
+  WHERE EXISTS (
+    SELECT 1 FROM tasks current
+    WHERE current.id=$1 AND current.deleted_at IS NULL AND current.share_global_assets
+  )
+  OR EXISTS (SELECT 1 FROM context_tasks ctx WHERE ctx.task_id=ANY(a.task_ids))
+  OR EXISTS (
+    SELECT 1 FROM exploration_anchors anchor
+    JOIN exploration_nodes node ON node.id=anchor.node_id
+    JOIN context_tasks ctx ON ctx.exploration_id=node.exploration_id
+    WHERE anchor.asset_id=a.id
+  )
+)`
+
+const contextCoverageCTE = directTaskContextCTE + taskAssetVisibilityCTE + `,
 target AS (
   SELECT DISTINCT a.id, a.type,
          COALESCE(a.url, a.domain, a.ip, a.app_name, a.root_domain, '') AS label
@@ -37,6 +55,10 @@ target AS (
        ))
   )
   JOIN context_tasks ctx ON ctx.task_id=ts.task_id
+  WHERE a.id IN (SELECT id FROM visible_assets)
+    UNION
+    SELECT a.id,a.type,COALESCE(a.url,a.domain,a.ip,a.app_name,a.root_domain,'') AS label
+    FROM assets a WHERE EXISTS (SELECT 1 FROM context_tasks ctx WHERE ctx.task_id=ANY(a.task_ids))
 	UNION
 	SELECT a.id, a.type,
 	       COALESCE(a.url, a.domain, a.ip, a.app_name, a.root_domain, '') AS label
@@ -52,41 +74,11 @@ tested AS (
   JOIN context_tasks ctx ON ctx.exploration_id=en.exploration_id
 )`
 
-// scopeTargetCTE selects every asset that BELONGS to the current task's (and its
-// direct source tasks') declared scope — membership, not literal value: a
-// root_domain scope pulls in every subdomain / service / endpoint whose own
-// root_domain column equals it; an ip/cidr scope pulls in assets whose ip OR
-// IP-literal host falls inside the net. $1 is the task id. Unlike contextCoverageCTE
-// it carries neither the fact-anchor union nor the tested set — it is pure "in
-// declared scope", independent of what has already been touched. Used by the
-// agent's list_assets so a query returns the task's relevant assets, not the
-// whole shared库.
-const scopeTargetCTE = `
-context_tasks AS (
-  SELECT t.id AS task_id
-  FROM tasks t
-  WHERE t.id=$1 AND t.deleted_at IS NULL
-  UNION ALL
-  SELECT source.id
-  FROM task_relations relation
-  JOIN tasks source ON source.id=relation.source_task_id AND source.deleted_at IS NULL
-  WHERE relation.task_id=$1
-),
-target AS (
-  SELECT DISTINCT a.id
-  FROM assets a
-  JOIN task_scope ts ON (
-       (ts.kind='company'     AND a.company_id = ts.company_id)
-    OR (ts.kind='root_domain' AND a.root_domain = ts.domain)
-    OR (ts.kind='subdomain'   AND a.domain = ts.domain)
-    OR (ts.kind IN ('ip','cidr') AND (ts.net >>= try_inet(a.ip) OR ts.net >>= try_inet(a.domain)))
-    OR (ts.kind='icp' AND (
-         lower(regexp_replace(COALESCE(a.icp,''), '[[:space:]]+', '', 'g')) = ts.value
-         OR lower(regexp_replace(COALESCE(a.app_icp,''), '[[:space:]]+', '', 'g')) = ts.value
-       ))
-  )
-  JOIN context_tasks ctx ON ctx.task_id=ts.task_id
-)`
+// scopeTargetCTE applies the live visibility policy to DSL and ID reads.
+// An isolated task sees only its own and explicitly related tasks' assets.
+const scopeTargetCTE = directTaskContextCTE + taskAssetVisibilityCTE + `,
+target AS (SELECT id FROM visible_assets)
+`
 
 // ListTaskScopeWithSources returns the current task's scope followed by the
 // scopes of its direct source tasks. TaskScope.TaskID preserves provenance.
@@ -199,7 +191,7 @@ ORDER BY target.id LIMIT $`+limitPosition+` OFFSET $`+offsetPosition, pageArgs..
 // used for destructive task cleanup; HostsByTask intentionally retains that
 // narrower, task-owned behavior.
 func (s *AssetStore) HostsByTaskWithSources(taskID int64) ([]string, error) {
-	rows, err := s.db.Query(`WITH `+directTaskContextCTE+`,
+	rows, err := s.db.Query(`WITH `+directTaskContextCTE+taskAssetVisibilityCTE+`,
 context_assets AS (
   SELECT DISTINCT a.id
   FROM assets a
@@ -223,6 +215,7 @@ context_assets AS (
        ))
   )
   JOIN context_tasks ctx ON ctx.task_id=ts.task_id
+  WHERE a.id IN (SELECT id FROM visible_assets)
 )
 SELECT COALESCE(a.domain,''), COALESCE(a.ip,''), COALESCE(a.url,'')
 FROM assets a JOIN context_assets ctx ON ctx.id=a.id`, taskID)

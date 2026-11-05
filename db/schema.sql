@@ -550,6 +550,8 @@ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS queued BOOLEAN NOT NULL DEFAULT false
 -- 给 agent 开放 add_task_scope/list_untested_assets;false=全部关闭(见 task_scope.go)。
 -- 存量任务默认 true 保持原行为;company 关联(task_scope kind=company)不受此开关影响。
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS coverage_enabled BOOLEAN NOT NULL DEFAULT true;
+-- Global asset reuse is opt-in, including for pre-existing tasks.
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS share_global_assets BOOLEAN NOT NULL DEFAULT false;
 -- 任务级 Worker 运行数量;0=用全局默认(settings.workers)。补旧库。
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS worker_count INTEGER NOT NULL DEFAULT 0;
 -- queued_at makes admission FIFO reflect the actual enqueue order rather than the
