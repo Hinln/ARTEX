@@ -26,10 +26,28 @@ import (
 	"github.com/Autumn-27/artex/traffic"
 )
 
-// defaultEgressProbes 按顺序尝试，第一个成功即停；probe_url 可覆盖，供隔离网使用。
+const settingEgressProbeURL = "egress_probe_url"
+
+// defaultEgressProbes 按顺序尝试，第一个成功即停；自定义地址为空时使用。
 var defaultEgressProbes = []string{
 	"https://api.ipify.org?format=json", // 返回 {"ip":"1.2.3.4"}
 	"https://ifconfig.me/ip",            // 返回纯文本 1.2.3.4
+}
+
+func (m *Manager) EgressProbeURL() string {
+	if m == nil || m.pg == nil {
+		return ""
+	}
+	raw, _, _ := m.pg.GetSetting(settingEgressProbeURL)
+	return strings.TrimSpace(raw)
+}
+
+// egressProbes reads settings for every probe so saves take effect without a restart.
+func (m *Manager) egressProbes() []string {
+	if raw := m.EgressProbeURL(); raw != "" {
+		return []string{raw}
+	}
+	return defaultEgressProbes
 }
 
 // validateProbeURL 只放行指向"非本机、非链路本地"的绝对 http(s) 地址。
@@ -339,9 +357,9 @@ func egressTarget(cfg string, capture, pending bool, agentProxy, agentCA string)
 // 空 = 测直连、永远返回 200 用 ok 表达结果。
 func (s *Server) testEgressProxy(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		GlobalProxy string `json:"global_proxy"`
-		ProbeURL    string `json:"probe_url"` // 可选：覆盖默认探测地址
-		Resume      bool   `json:"resume"`    // manual settings probe may release paused_by_proxy tasks
+		GlobalProxy string  `json:"global_proxy"`
+		ProbeURL    *string `json:"probe_url"` // 省略=已保存地址；空串=默认；非空=临时覆盖
+		Resume      bool    `json:"resume"`    // manual settings probe may release paused_by_proxy tasks
 	}
 	// 请求体只有一个地址，给个上限，免得被塞大 payload。
 	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
@@ -351,14 +369,17 @@ func (s *Server) testEgressProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	probes := defaultEgressProbes
-	if u := strings.TrimSpace(req.ProbeURL); u != "" {
-		checked, err := validateProbeURL(u)
-		if err != nil {
-			writeErr(w, 400, err.Error())
-			return
+	probes := s.m.egressProbes()
+	if req.ProbeURL != nil {
+		probes = defaultEgressProbes
+		if u := strings.TrimSpace(*req.ProbeURL); u != "" {
+			checked, err := validateProbeURL(u)
+			if err != nil {
+				writeErr(w, 400, err.Error())
+				return
+			}
+			probes = []string{checked}
 		}
-		probes = []string{checked}
 	}
 
 	// 这三个调用决定 agent 到底会走哪条路。
@@ -391,7 +412,7 @@ func (s *Server) testEgressProxy(w http.ResponseWriter, r *http.Request) {
 	rep.Checks = append(rep.Checks, egressCheck{
 		Key:    "direct",
 		Label:  "① 直连 IP（不经过代理）",
-		Result: probeEgress(ctx, "", "", probes, 10*time.Second),
+		Result: s.runProxyProbe(ctx, "", "", probes, 10*time.Second),
 	})
 
 	if configuredProxy != "" {
@@ -405,7 +426,7 @@ func (s *Server) testEgressProxy(w http.ResponseWriter, r *http.Request) {
 			Label: "② 经全局代理的出口 IP",
 			// Path 是实际探测地址（经 MITM 时是 8788），排查时看这个。
 			Path:   maskSecrets(probeAddr),
-			Result: probeEgress(ctx, probeAddr, probeCA, probes, timeout),
+			Result: s.runProxyProbe(ctx, probeAddr, probeCA, probes, timeout),
 		})
 	} else {
 		skipReason := "输入框为空，未配置代理"

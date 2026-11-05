@@ -145,7 +145,7 @@ func (s *Server) handleProxyFailure(taskID string, cause error) {
 	if s.handleProxyPoolFailure(cause) {
 		return
 	}
-	if probe := s.runProxyProbe(s.ctx, s.m.GlobalProxy(), "", defaultEgressProbes, 10*time.Second); probe.OK {
+	if probe := s.runProxyProbe(s.ctx, s.m.GlobalProxy(), "", s.m.egressProbes(), 10*time.Second); probe.OK {
 		return
 	}
 	s.pauseProxyTask(taskID, cause)
@@ -200,7 +200,7 @@ func (s *Server) handleProxyTrafficFailure(cause error) {
 	}
 	// Confirm the saved global proxy itself before pausing. MITM RequestError can
 	// also represent a target-side failure, and those must not pause a task.
-	if probe := probeEgress(context.Background(), s.m.GlobalProxy(), "", defaultEgressProbes, 10*time.Second); probe.OK {
+	if probe := probeEgress(context.Background(), s.m.GlobalProxy(), "", s.m.egressProbes(), 10*time.Second); probe.OK {
 		return
 	}
 	for _, t := range s.m.List() {
@@ -219,7 +219,7 @@ func (s *Server) handleProxyToolFailure(ctx context.Context, cause error) {
 	if !isGlobalProxyDialFailure(cause) || strings.TrimSpace(s.m.GlobalProxy()) == "" {
 		return
 	}
-	if probe := probeEgress(context.Background(), s.m.GlobalProxy(), "", defaultEgressProbes, 10*time.Second); probe.OK {
+	if probe := probeEgress(context.Background(), s.m.GlobalProxy(), "", s.m.egressProbes(), 10*time.Second); probe.OK {
 		return
 	}
 	if info := agent.RunInfoFrom(ctx); info.TaskID > 0 {
@@ -302,7 +302,7 @@ func (s *Server) proxyReconnectTick() {
 		if !claimed {
 			continue
 		}
-		res := s.runProxyProbe(context.Background(), s.m.GlobalProxy(), "", defaultEgressProbes, 10*time.Second)
+		res := s.runProxyProbe(context.Background(), s.m.GlobalProxy(), "", s.m.egressProbes(), 10*time.Second)
 		if res.OK {
 			s.proxyReconnectSuccessWithGuards(map[string]proxyReconnectGuard{
 				t.ID: {generation: round, attempt: attempt, checkAttempt: true},
@@ -431,7 +431,7 @@ func (s *Server) testTaskProxy(w http.ResponseWriter, r *http.Request) {
 		s.proxyReconnectSuccessWithGuards(guards, nil)
 		return
 	}
-	res := s.runProxyProbe(r.Context(), proxy, "", defaultEgressProbes, 10*time.Second)
+	res := s.runProxyProbe(r.Context(), proxy, "", s.m.egressProbes(), 10*time.Second)
 	if res.OK {
 		s.proxyReconnectSuccessWithGuards(guards, nil)
 	}

@@ -1019,6 +1019,7 @@ export interface Settings {
   proxy_reconnect_max_attempts?: number;
   proxy_reconnect_interval_seconds?: number;
   show_egress_ip?: boolean; // 在顶栏显示直连 / 全局代理出口 IP；默认关闭
+  egress_probe_url?: string; // 自定义 IP 探测服务；空=默认公共回显服务
   python_interpreter?: string; // 自定义脚本工具的 python 解释器路径(空=运行时检测)
   workers?: number; // 并发工作 agent 数(默认3)；对之后启动的任务生效
   worker_pools: WorkerPool[];

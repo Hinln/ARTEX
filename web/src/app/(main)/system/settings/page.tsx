@@ -85,9 +85,11 @@ export default function SystemSettingsPage() {
   const clearEgressReport = () => {
     egressSeq.current += 1;
     setEgressReport(null);
+    setEgressTesting(false);
   };
   // 探测地址：留空用公网回显；隔离网填内网回显服务。
   const [egressProbeUrl, setEgressProbeUrl] = React.useState("");
+  const [savingEgressProbeUrl, setSavingEgressProbeUrl] = React.useState(false);
   const [testing, setTesting] = React.useState(false);
   const [loaded, setLoaded] = React.useState(false);
   const [settingsLoaded, setSettingsLoaded] = React.useState(false);
@@ -143,6 +145,7 @@ export default function SystemSettingsPage() {
     setProxyPoolLogs(s.proxy_pool_switch_log ?? []);
     setProxyReconnectMax(String(s.proxy_reconnect_max_attempts ?? 5));
     setProxyReconnectInterval(String(s.proxy_reconnect_interval_seconds ?? 30));
+    setEgressProbeUrl(s.egress_probe_url ?? "");
     setPyInterp(s.python_interpreter ?? "");
     setWorkers(String(s.workers ?? 3));
     setWorkerPools(s.worker_pools ?? []);
@@ -567,6 +570,21 @@ export default function SystemSettingsPage() {
       .catch((e) => toast.error("保存失败：" + (e as Error).message));
   };
 
+  const saveEgressProbeUrl = async () => {
+    setSavingEgressProbeUrl(true);
+    try {
+      const settings = await api.setSettings({ egress_probe_url: egressProbeUrl.trim() });
+      setEgressProbeUrl(settings.egress_probe_url ?? "");
+      clearEgressReport();
+      toast.success(settings.egress_probe_url ? "已保存 IP 探测服务" : "已恢复默认 IP 探测服务");
+      if (showEgressIp) void probeEgress().catch(() => undefined);
+    } catch (e) {
+      toast.error(`保存 IP 探测服务失败：${(e as Error).message}`);
+    } finally {
+      setSavingEgressProbeUrl(false);
+    }
+  };
+
   // 测表单里当前的值，不要求先保存；后端返回直连 / 经代理两条。
   const testEgress = () => {
     const seq = ++egressSeq.current;
@@ -576,8 +594,7 @@ export default function SystemSettingsPage() {
       .testEgressProxy({
         global_proxy: globalProxyInput.trim(),
         resume: true,
-
-        ...(egressProbeUrl.trim() ? { probe_url: egressProbeUrl.trim() } : {}),
+        probe_url: egressProbeUrl.trim(),
       })
       .then((rep) => {
         if (seq !== egressSeq.current) return; // 期间改过配置，这份结果已经过期
@@ -952,8 +969,8 @@ export default function SystemSettingsPage() {
                 <details className="text-xs">
                   <summary className="text-muted-foreground cursor-pointer select-none">出口 IP 测试说明</summary>
                   <p className="text-muted-foreground mt-2 leading-relaxed">
-                    测试会访问 IP 回显服务（默认 api.ipify.org，失败时改用 ifconfig.me）。结果中的直连 IP 与代理 IP
-                    可用于确认代理是否生效。修改地址后无需保存即可测试。
+                    测试会访问 IP 回显服务。未设置自定义地址时，默认访问 api.ipify.org，失败时改用 ifconfig.me。
+                    配置自定义地址后仅使用该服务。结果中的直连 IP 与代理 IP 可用于确认代理是否生效。修改地址后无需保存即可测试。
                   </p>
                 </details>
                 {/* 内网里公网回显不可达，两行都会失败——不是代理坏了。 */}
@@ -961,16 +978,32 @@ export default function SystemSettingsPage() {
                   <summary className="text-muted-foreground cursor-pointer select-none">
                     自定义 IP 探测服务（可选）
                   </summary>
-                  <div className="mt-2 flex flex-col gap-1">
-                    <Input
-                      autoComplete="off"
-                      placeholder="留空 = 使用默认的公共 IP 回显服务；内网可填 http://<内网IP>:<端口>/"
-                      value={egressProbeUrl}
-                      onChange={(e) => {
-                        setEgressProbeUrl(e.target.value);
-                        clearEgressReport();
-                      }}
-                    />
+                  <div className="mt-2 flex flex-col gap-2">
+                    <Label htmlFor="egress-probe-url">IP 探测服务地址</Label>
+                    <div className="flex flex-col gap-2 sm:flex-row">
+                      <Input
+                        id="egress-probe-url"
+                        autoComplete="off"
+                        placeholder="留空使用默认服务；内网可填 http://<内网IP>:<端口>/"
+                        value={egressProbeUrl}
+                        disabled={!settingsLoaded || savingEgressProbeUrl}
+                        onChange={(e) => {
+                          setEgressProbeUrl(e.target.value);
+                          clearEgressReport();
+                        }}
+                      />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        disabled={!settingsLoaded || savingEgressProbeUrl}
+                        onClick={() => void saveEgressProbeUrl()}
+                      >
+                        {savingEgressProbeUrl ? "保存中…" : "保存探测服务"}
+                      </Button>
+                    </div>
+                    <span className="text-muted-foreground leading-relaxed">
+                      保存后用于顶栏出口 IP、代理测试、健康检查和自动重连，刷新页面或重启后仍生效。清空地址并保存可恢复默认服务。
+                    </span>
                     <span className="text-muted-foreground leading-relaxed">
                       自定义 IP 探测服务需返回纯文本 IP 或 <code>{'{"ip":"1.2.3.4"}'}</code> 格式的 JSON。
                       若内网环境下无法访问公网，或本机和内网代理共用同一个公网出口， 则可替换为内网 IP 探测服务，此时 ①
