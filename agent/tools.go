@@ -2149,6 +2149,7 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		t.cdnDetect(), t.faviconHash(), t.fofaSearch(), t.robotsHarvest(),
 		t.subdomainVerify(),
 		t.icpLookup(),
+		t.listCredentials(),
 		t.httpFuzz(),
 		t.authzDiff(),
 		t.oobArm(),

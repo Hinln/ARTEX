@@ -939,7 +939,8 @@ func (s *Server) Handler() http.Handler {
 	s.registerFindingTraffic(mux)
 	s.registerRepeater(mux)
 	s.registerFindingReproduce(mux) // 系统复现结论：读取/重新触发
-	s.registerRecon(mux)            // 信息搜集：FOFA key 池
+	s.registerRecon(mux)
+	s.registerEvidenceMaintenance(mux) // 证据回收：删掉没被引用的旧流量            // 信息搜集：FOFA key 池
 	mux.HandleFunc("GET /api/exploration/findings/{id}", s.getFinding)
 	mux.HandleFunc("GET /api/exploration/findings/{id}/lineage", s.findingLineage)
 	mux.HandleFunc("POST /api/exploration/findings/{id}/deepen", s.deepenFinding)
@@ -4523,9 +4524,17 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 			counts[ty] = len(ns)
 		}
 	}
+	states := map[int64]string{}
+	if t.Store != nil {
+		if raw, err := t.Store.FindingStates(r.Context()); err == nil {
+			for nodeID, st := range raw {
+				states[nodeID] = string(st)
+			}
+		}
+	}
 	md := report.Markdown(report.Input{
 		Title: t.Description, Goal: t.Goal, GeneratedAt: time.Now(),
-		AssetCounts: counts, Findings: findings,
+		AssetCounts: counts, Findings: findings, States: states,
 	})
 	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
 	w.WriteHeader(200)

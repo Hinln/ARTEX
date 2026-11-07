@@ -19,6 +19,9 @@ type Input struct {
 	GeneratedAt time.Time
 	AssetCounts map[string]int
 	Findings    []*db.Node
+	// States 由调用方从 findings 表取：node_id -> verified/failed/pending。
+	// 没有它，报告分不清「复现器重放通过」和「模型自己说能打通」。
+	States map[int64]string
 }
 
 type findingView struct {
@@ -27,9 +30,10 @@ type findingView struct {
 	Severity  string
 	Summary   string
 	PoC       string
+	State     string
 }
 
-func parseFinding(n *db.Node) findingView {
+func parseFinding(n *db.Node, states map[int64]string) findingView {
 	var p struct {
 		VulnClass string `json:"vulnclass"`
 		Name      string `json:"name"`
@@ -40,7 +44,11 @@ func parseFinding(n *db.Node) findingView {
 		} `json:"evidence"`
 	}
 	_ = json.Unmarshal(n.Payload, &p)
-	return findingView{p.VulnClass, p.Name, p.Severity, p.Summary, p.Evidence.PoC}
+	v := findingView{p.VulnClass, p.Name, p.Severity, p.Summary, p.Evidence.PoC, ""}
+	if states != nil {
+		v.State = states[n.ID]
+	}
+	return v
 }
 
 var sevRank = map[string]int{"critical": 0, "high": 1, "medium": 2, "low": 3, "": 4}
@@ -70,22 +78,40 @@ func Markdown(in Input) string {
 	b.WriteString("\n\n")
 
 	// findings
-	fmt.Fprintf(&b, "## 发现\n\n")
 	if len(in.Findings) == 0 {
 		b.WriteString("_本次未确认漏洞。_\n\n")
 	} else {
 		fs := make([]findingView, 0, len(in.Findings))
 		for _, n := range in.Findings {
-			fs = append(fs, parseFinding(n))
+			fs = append(fs, parseFinding(n, in.States))
 		}
 		sort.SliceStable(fs, func(i, j int) bool { return sevRank[fs[i].Severity] < sevRank[fs[j].Severity] })
-		for i, f := range fs {
-			fmt.Fprintf(&b, "### %d. [%s] %s\n\n", i+1, strings.ToUpper(nz(f.Severity, "info")), nz(f.Name, nz(f.VulnClass, "未分类")))
-			fmt.Fprintf(&b, "%s\n\n", nz(f.Summary, ""))
-			if f.PoC != "" {
-				fmt.Fprintf(&b, "**PoC / 证据：**\n\n```\n%s\n```\n\n", f.PoC)
+		var verified, pending []findingView
+		for _, f := range fs {
+			if f.State == "verified" {
+				verified = append(verified, f)
+			} else {
+				pending = append(pending, f)
 			}
 		}
+		render := func(title, note string, group []findingView, start int) {
+			if len(group) == 0 {
+				return
+			}
+			fmt.Fprintf(&b, "### %s（%d）\n\n", title, len(group))
+			if note != "" {
+				fmt.Fprintf(&b, "%s\n\n", note)
+			}
+			for i, f := range group {
+				fmt.Fprintf(&b, "#### %d. [%s] %s\n\n", start+i, strings.ToUpper(nz(f.Severity, "info")), nz(f.Name, nz(f.VulnClass, "未分类")))
+				fmt.Fprintf(&b, "%s\n\n", nz(f.Summary, ""))
+				if f.PoC != "" {
+					fmt.Fprintf(&b, "**PoC / 证据：**\n\n```\n%s\n```\n\n", f.PoC)
+				}
+			}
+		}
+		render("已验证（复现器重放通过）", "这些结论有可重放的证据流量，复现器比对通过，可以直接交付。", verified, 1)
+		render("待验证（仅有自述证据）", "这些结论还没有通过复现。交付前必须人工复核或重新触发复现；报告里不要把它们当成已确认漏洞。", pending, len(verified)+1)
 	}
 
 	return b.String()
