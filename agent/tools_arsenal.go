@@ -672,6 +672,206 @@ var techSigs = []techSig{
 	{"express", func(h map[string]string, b string) string { return headerHas(h, "x-powered-by", "express") }},
 	{"nextjs", func(h map[string]string, b string) string { return bodyHas(b, "__NEXT_DATA__") }},
 	{"wordpress", func(h map[string]string, b string) string { return bodyHas(b, "wp-content") }},
+	// 服务端与中间件
+	{"openresty", func(h map[string]string, b string) string { return headerHas(h, "server", "openresty") }},
+	{"tengine", func(h map[string]string, b string) string { return headerHas(h, "server", "tengine") }},
+	{"caddy", func(h map[string]string, b string) string { return headerHas(h, "server", "caddy") }},
+	{"lighttpd", func(h map[string]string, b string) string { return headerHas(h, "server", "lighttpd") }},
+	{"jetty", func(h map[string]string, b string) string {
+		if e := headerHas(h, "server", "jetty"); e != "" {
+			return e
+		}
+		return headerHas(h, "server", "jetty(")
+	}},
+	{"jboss", func(h map[string]string, b string) string {
+		if e := headerHas(h, "x-powered-by", "jboss"); e != "" {
+			return e
+		}
+		return bodyHas(b, "JBoss Web")
+	}},
+	{"websphere", func(h map[string]string, b string) string { return headerHas(h, "server", "websphere") }},
+	{"kestrel", func(h map[string]string, b string) string { return headerHas(h, "server", "kestrel") }},
+	{"werkzeug", func(h map[string]string, b string) string { return headerHas(h, "server", "werkzeug") }},
+	{"gunicorn", func(h map[string]string, b string) string { return headerHas(h, "server", "gunicorn") }},
+	{"envoy", func(h map[string]string, b string) string { return headerHas(h, "server", "envoy") }},
+	{"haproxy", func(h map[string]string, b string) string { return headerHas(h, "server", "haproxy") }},
+	{"traefik", func(h map[string]string, b string) string { return headerHas(h, "server", "traefik") }},
+	{"kong", func(h map[string]string, b string) string { return headerHas(h, "server", "kong") }},
+	{"varnish", func(h map[string]string, b string) string { return headerHas(h, "x-varnish", ".") }},
+	// 框架与应用服务器指纹
+	{"nodejs", func(h map[string]string, b string) string {
+		if e := headerHas(h, "x-powered-by", "express"); e != "" {
+			return e
+		}
+		return headerHas(h, "x-powered-by", "node")
+	}},
+	{"thinkphp", func(h map[string]string, b string) string {
+		if e := bodyHas(b, "ThinkPHP"); e != "" {
+			return e
+		}
+		return headerHas(h, "x-powered-by", "thinkphp")
+	}},
+	{"laravel", func(h map[string]string, b string) string { return headerHas(h, "set-cookie", "laravel_session") }},
+	{"django", func(h map[string]string, b string) string {
+		if e := headerHas(h, "set-cookie", "csrftoken"); e != "" {
+			return e
+		}
+		return bodyHas(b, "csrfmiddlewaretoken")
+	}},
+	{"flask", func(h map[string]string, b string) string { return headerHas(h, "set-cookie", "session=ey") }},
+	{"rails", func(h map[string]string, b string) string { return headerHas(h, "x-runtime", ".") }},
+	{"struts2", func(h map[string]string, b string) string { return bodyHas(b, "struts.devMode") }},
+	{"springboot-actuator", func(h map[string]string, b string) string { return bodyHas(b, "\"_links\"") }},
+	{"nuxt", func(h map[string]string, b string) string { return bodyHas(b, "__NUXT__") }},
+	{"vite", func(h map[string]string, b string) string { return bodyHas(b, "/@vite/client") }},
+	{"webpack", func(h map[string]string, b string) string { return bodyHas(b, "webpackJsonp") }},
+	{"layui", func(h map[string]string, b string) string { return bodyHas(b, "layui.js") }},
+	{"elementui", func(h map[string]string, b string) string { return bodyHas(b, "el-button") }},
+	{"antd", func(h map[string]string, b string) string { return bodyHas(b, "ant-btn") }},
+	{"echarts", func(h map[string]string, b string) string { return bodyHas(b, "echarts") }},
+	// 国产 OA / ERP / 统一身份认证（这些名字本身就是漏洞面线索）
+	{"weaver-eoffice", func(h map[string]string, b string) string {
+		if e := bodyHas(b, "/wui/index.html"); e != "" {
+			return e
+		}
+		return bodyHas(b, "eoffice")
+	}},
+	{"weaver-ecology", func(h map[string]string, b string) string {
+		if e := headerHas(h, "set-cookie", "ecology_j"); e != "" {
+			return e
+		}
+		return bodyHas(b, "ecology")
+	}},
+	{"seeyon-oa", func(h map[string]string, b string) string { return bodyHas(b, "seeyon") }},
+	{"tongda-oa", func(h map[string]string, b string) string { return bodyHas(b, "Office Anywhere") }},
+	{"landray-ekp", func(h map[string]string, b string) string { return bodyHas(b, "landray") }},
+	{"yonyou-nc", func(h map[string]string, b string) string {
+		if e := bodyHas(b, "yonyou"); e != "" {
+			return e
+		}
+		return bodyHas(b, "用友")
+	}},
+	{"kingdee", func(h map[string]string, b string) string {
+		if e := bodyHas(b, "kingdee"); e != "" {
+			return e
+		}
+		return bodyHas(b, "金蝶")
+	}},
+	{"wisedu-cas", func(h map[string]string, b string) string {
+		if e := bodyHas(b, "authserver"); e != "" {
+			return e
+		}
+		return bodyHas(b, "统一身份认证")
+	}},
+	{"cas-sso", func(h map[string]string, b string) string {
+		if e := bodyHas(b, "cas/login"); e != "" {
+			return e
+		}
+		return bodyHas(b, "Central Authentication Service")
+	}},
+	// 安全设备 / WAF
+	{"sangfor", func(h map[string]string, b string) string {
+		if e := bodyHas(b, "SANGFOR"); e != "" {
+			return e
+		}
+		return headerHas(h, "set-cookie", "sinfor")
+	}},
+	{"topsec", func(h map[string]string, b string) string { return bodyHas(b, "topsec") }},
+	{"hikvision", func(h map[string]string, b string) string {
+		if e := bodyHas(b, "Hikvision"); e != "" {
+			return e
+		}
+		return bodyHas(b, "ivms")
+	}},
+	{"dahua", func(h map[string]string, b string) string { return bodyHas(b, "Dahua") }},
+	{"ruijie", func(h map[string]string, b string) string { return bodyHas(b, "ruijie") }},
+	{"h3c", func(h map[string]string, b string) string { return bodyHas(b, "H3C") }},
+	{"safedog", func(h map[string]string, b string) string {
+		if e := bodyHas(b, "safedog"); e != "" {
+			return e
+		}
+		return headerHas(h, "server", "safedog")
+	}},
+	{"btwaf", func(h map[string]string, b string) string { return headerHas(h, "server", "btwaf") }},
+	{"safeline", func(h map[string]string, b string) string {
+		if e := bodyHas(b, "Safeline"); e != "" {
+			return e
+		}
+		return headerHas(h, "server", "safeline")
+	}},
+	{"aliyun-waf", func(h map[string]string, b string) string {
+		if e := headerHas(h, "server", "aliyun"); e != "" {
+			return e
+		}
+		return headerHas(h, "x-swift", ".")
+	}},
+	{"tencent-cloud", func(h map[string]string, b string) string { return headerHas(h, "server", "tencent") }},
+	// 面板 / 运维 / 数据服务
+	{"baota-panel", func(h map[string]string, b string) string {
+		if e := bodyHas(b, "BTPanel"); e != "" {
+			return e
+		}
+		return bodyHas(b, "宝塔面板")
+	}},
+	{"phpmyadmin", func(h map[string]string, b string) string { return bodyHas(b, "phpMyAdmin") }},
+	{"adminer", func(h map[string]string, b string) string { return bodyHas(b, "adminer.org") }},
+	{"webmin", func(h map[string]string, b string) string { return bodyHas(b, "Webmin") }},
+	{"portainer", func(h map[string]string, b string) string { return bodyHas(b, "portainer") }},
+	{"rancher", func(h map[string]string, b string) string { return bodyHas(b, "Rancher") }},
+	{"k8s-dashboard", func(h map[string]string, b string) string { return bodyHas(b, "kubernetes-dashboard") }},
+	{"kibana", func(h map[string]string, b string) string {
+		if e := headerHas(h, "kbn-name", "."); e != "" {
+			return e
+		}
+		return bodyHas(b, "kibana")
+	}},
+	{"elasticsearch", func(h map[string]string, b string) string { return bodyHas(b, "\"cluster_name\"") }},
+	{"minio", func(h map[string]string, b string) string {
+		if e := headerHas(h, "server", "minio"); e != "" {
+			return e
+		}
+		return bodyHas(b, "MinIO")
+	}},
+	{"rabbitmq", func(h map[string]string, b string) string { return bodyHas(b, "RabbitMQ Management") }},
+	{"zabbix", func(h map[string]string, b string) string { return bodyHas(b, "Zabbix SIA") }},
+	{"prometheus", func(h map[string]string, b string) string { return bodyHas(b, "Prometheus") }},
+	{"consul", func(h map[string]string, b string) string { return bodyHas(b, "Consul by HashiCorp") }},
+	{"etcd", func(h map[string]string, b string) string { return bodyHas(b, "\"etcdserver\"") }},
+	{"solr", func(h map[string]string, b string) string { return bodyHas(b, "SolrCore") }},
+	{"ceph", func(h map[string]string, b string) string { return bodyHas(b, "Ceph Dashboard") }},
+	{"nexus", func(h map[string]string, b string) string { return bodyHas(b, "Nexus Repository Manager") }},
+	{"harbor", func(h map[string]string, b string) string { return bodyHas(b, "Harbor") }},
+	{"gitlab", func(h map[string]string, b string) string {
+		if e := headerHas(h, "set-cookie", "_gitlab_session"); e != "" {
+			return e
+		}
+		return bodyHas(b, "GitLab")
+	}},
+	{"gitea", func(h map[string]string, b string) string { return bodyHas(b, "Gitea") }},
+	{"gogs", func(h map[string]string, b string) string { return bodyHas(b, "Gogs") }},
+	{"jira", func(h map[string]string, b string) string { return bodyHas(b, "jira") }},
+	{"confluence", func(h map[string]string, b string) string { return bodyHas(b, "confluence") }},
+	{"nextcloud", func(h map[string]string, b string) string { return bodyHas(b, "nextcloud") }},
+	{"seafile", func(h map[string]string, b string) string { return bodyHas(b, "seafile") }},
+	{"openvpn", func(h map[string]string, b string) string { return bodyHas(b, "OpenVPN") }},
+	{"fortinet", func(h map[string]string, b string) string { return bodyHas(b, "FortiGate") }},
+	{"citrix", func(h map[string]string, b string) string { return bodyHas(b, "Citrix") }},
+	{"vmware-vsphere", func(h map[string]string, b string) string { return bodyHas(b, "VMware vSphere") }},
+	// 国产 CMS（历史洞最多的一类）
+	{"discuz", func(h map[string]string, b string) string {
+		if e := bodyHas(b, "Discuz!"); e != "" {
+			return e
+		}
+		return headerHas(h, "set-cookie", "discuz_")
+	}},
+	{"dedecms", func(h map[string]string, b string) string { return bodyHas(b, "DedeCMS") }},
+	{"phpcms", func(h map[string]string, b string) string { return bodyHas(b, "PHPCMS") }},
+	{"empirecms", func(h map[string]string, b string) string { return bodyHas(b, "EmpireCMS") }},
+	{"zblog", func(h map[string]string, b string) string { return bodyHas(b, "Z-Blog") }},
+	{"ecshop", func(h map[string]string, b string) string { return bodyHas(b, "ECSHOP") }},
+	{"shopxo", func(h map[string]string, b string) string { return bodyHas(b, "ShopXO") }},
+	{"maccms", func(h map[string]string, b string) string { return bodyHas(b, "MacCMS") }},
+	{"xxljob", func(h map[string]string, b string) string { return bodyHas(b, "XXL-JOB") }},
 }
 
 func techHits(headers map[string]string, body string) []string {

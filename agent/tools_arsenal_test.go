@@ -109,3 +109,62 @@ func TestResolveURL(t *testing.T) {
 		}
 	}
 }
+
+func TestTechSigsCoverageIsBroad(t *testing.T) {
+	if len(techSigs) < 100 {
+		t.Fatalf("techSigs = %d, expected at least 100 after the expansion", len(techSigs))
+	}
+	seen := map[string]bool{}
+	for _, sig := range techSigs {
+		if sig.name == "" {
+			t.Fatalf("signature without a name")
+		}
+		if seen[sig.name] {
+			t.Fatalf("duplicate signature %q", sig.name)
+		}
+		seen[sig.name] = true
+	}
+}
+
+func TestTechSigsChineseStacks(t *testing.T) {
+	cases := []struct {
+		name    string
+		headers map[string]string
+		body    string
+	}{
+		{"weaver-ecology", map[string]string{"set-cookie": "ecology_JSessionid=abc"}, ""},
+		{"tongda-oa", map[string]string{}, "<title>Office Anywhere 2021</title>"},
+		{"seeyon-oa", map[string]string{}, "var _seeyon_ = 1"},
+		{"thinkphp", map[string]string{}, "ThinkPHP</title>"},
+		{"wisedu-cas", map[string]string{}, "<a href=\"/authserver/login\">"},
+		{"btwaf", map[string]string{"server": "btwaf/1.0"}, ""},
+		{"hikvision", map[string]string{}, "Hikvision Digital Technology"},
+		{"phpmyadmin", map[string]string{}, "<title>phpMyAdmin</title>"},
+		{"xxljob", map[string]string{}, "XXL-JOB"},
+		{"dedecms", map[string]string{}, "Powered by DedeCMS"},
+	}
+	for _, c := range cases {
+		hits := techHits(c.headers, c.body)
+		found := false
+		for _, h := range hits {
+			if strings.HasPrefix(h, c.name+" (") {
+				found = true
+				if !strings.Contains(h, "~") && !strings.Contains(h, ":") {
+					t.Fatalf("%s fired without evidence: %s", c.name, h)
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("%s not detected; hits=%v", c.name, hits)
+		}
+	}
+}
+
+func TestTechSigsNoEvidenceNoClaim(t *testing.T) {
+	if hits := techHits(map[string]string{"server": "nginx/1.24.0"}, "<html>hello</html>"); len(hits) == 0 {
+		t.Fatalf("nginx header should fire")
+	}
+	for _, h := range techHits(map[string]string{}, "<html>nothing here</html>") {
+		t.Fatalf("empty response claimed %s", h)
+	}
+}
