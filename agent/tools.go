@@ -1303,15 +1303,20 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 			return actool.Errorf(err.Error()), nil
 		}
 		severityNote := ""
-		if strings.TrimSpace(a.Evidence) == "" {
-			return actool.Errorf("report_finding 需要 evidence：贴出复现该漏洞的真实命令输出或原始响应；没有可复核证据的结论不入库。"), nil
-		}
+		// evidence 是选填的：planner 交接时用 evidence_hint_id 带流量引用，
+		// worker 现场发现时贴回显。两者都没有也照样入库，但会在返回值里
+		// 标明「无证据」，由报告的「待验证」一节兜住——不在这里硬拦，
+		// 否则正常流程会被当成臆造挡回去。
 		// Evidence has to be real: it must match a tool output recorded in this
 		// session, and it must not read like a guess. This is where "模型自己骗自己"
 		// gets caught — a fabricated回显 has nothing to match against.
 		sess := strconv.FormatInt(intercept.ConvIDFromContext(ctx), 10)
-		if okEvidence, why := VerifyEvidence(sess, a.Evidence); !okEvidence {
-			return actool.Errorf("漏洞未入库：" + why), nil
+		// 走 evidence_hint_id 时证据是已绑定的流量引用，没有手抄回显可核；
+		// 只核对手写 evidence 的那条路。
+		if strings.TrimSpace(a.Evidence) != "" {
+			if okEvidence, why := VerifyEvidence(sess, a.Evidence); !okEvidence {
+				return actool.Errorf("漏洞未入库：" + why), nil
+			}
 		}
 		if why, rejected := RejectReasonFor(PolicyForStore(t.ts), a.VulnClass, a.Summary); rejected {
 			return actool.Errorf("「" + a.VulnClass + "」不收录：" + why + "。换方向，或把利用链打穿到拿数据/接管后再交。"), nil

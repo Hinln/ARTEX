@@ -435,11 +435,17 @@ func RecordFindingTx(ctx context.Context, tx *sql.Tx, in RecordFindingInput, pre
 			WHERE id = $1`, dupID, in.Evidence); err != nil {
 			return nil, err
 		}
-		if err := AddFindingTrafficTx(tx, dupID, prepared); err != nil {
-			return nil, err
+		out := &RecordedFinding{FindingID: dupID, NodeID: dupNode, Traffic: &FindingTraffic{FindingID: dupID}}
+		// 本次没有新证据要绑（录制关闭、或调用方只做重复上报）就别去碰绑定，
+		// 更不要把上一次的绑带原样当成这次的返回值。
+		if len(prepared) > 0 {
+			if err := AddFindingTrafficTx(tx, dupID, prepared); err != nil {
+				return nil, err
+			}
+			if tr, terr := FindingTrafficTx(tx, dupID); terr == nil && tr != nil {
+				out.Traffic = tr
+			}
 		}
-		out := &RecordedFinding{FindingID: dupID, NodeID: dupNode}
-		out.Traffic, _ = FindingTrafficTx(tx, dupID)
 		return out, nil
 	}
 	payload, _ := json.Marshal(map[string]any{"vulnclass": in.VulnClass, "name": in.Name, "severity": in.Severity, "summary": in.Summary, "evidence": map[string]any{"by": in.Worker, "poc": in.Evidence}})

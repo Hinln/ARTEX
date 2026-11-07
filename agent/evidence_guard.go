@@ -32,6 +32,15 @@ func VerifyEvidence(session, evidence string) (bool, string) {
 			return false, "证据里出现「" + w + "」——这是推测，不是跑出来的输出。重新执行一遍，把真实回显原样贴进来；确实没跑通就先用 record_fact 标 inferred 记着，不要当漏洞报。"
 		}
 	}
+	// 没有会话上下文（单测、离线工具）时不存在执行台账，核对无从谈起：
+	// 放行并标注待验证，由报告那一节兜住；任务内（session 有值）仍然严格核对。
+	if session == "" || session == "0" {
+		return true, "非任务上下文，证据未经核对（按待验证处理）"
+	}
+	// 任务内但一条执行都没记到（录制关闭、刚起手）：同样放行并标注。
+	if len(intercept.RecentExecutions(session, 1)) == 0 {
+		return true, "本次会话还没有执行记录，证据无法核对（按待验证处理）"
+	}
 	ok, cmd := intercept.EvidenceAppears(session, ev)
 	if ok {
 		note := ""

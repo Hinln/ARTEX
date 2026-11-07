@@ -72,8 +72,23 @@ func TestHealthGateAndResponse(t *testing.T) {
 						}
 						return
 					}
-					if w.Header().Get("WWW-Authenticate") != "" || len(body) != 1 || body["ok"] != true {
+					if w.Header().Get("WWW-Authenticate") != "" || body["ok"] != true {
 						t.Fatalf("unexpected health response: %v %s", w.Header(), w.Body.String())
+					}
+					for k := range body {
+						if k != "ok" && k != "gate" {
+							t.Fatalf("health leaks %q: %s", k, w.Body.String())
+						}
+					}
+					if g, ok := body["gate"].(map[string]any); ok {
+						if _, isBool := g["enabled"].(bool); !isBool {
+							t.Fatalf("gate.enabled must be a bool: %s", w.Body.String())
+						}
+						for k := range g {
+							if k != "enabled" {
+								t.Fatalf("unauthenticated health exposes gate.%s: %s", k, w.Body.String())
+							}
+						}
 					}
 				})
 			}

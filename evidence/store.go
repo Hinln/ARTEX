@@ -112,7 +112,7 @@ func (s *Store) writeBody(r io.Reader, expectedLength int64, expectedHash string
 		return "", err
 	}
 	defer d.Close()
-	return hash, d.Sync()
+	return hash, syncDir(d)
 }
 
 // StageFindingsExport freezes bindings/report versions and makes private body
