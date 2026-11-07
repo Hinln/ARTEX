@@ -937,6 +937,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/exploration/findings/export", s.findingsExport)
 	s.registerFindingTraffic(mux)
 	s.registerRepeater(mux)
+	s.registerFindingReproduce(mux) // 系统复现结论：读取/重新触发
+	s.registerRecon(mux)            // 信息搜集：FOFA key 池
 	mux.HandleFunc("GET /api/exploration/findings/{id}", s.getFinding)
 	mux.HandleFunc("GET /api/exploration/findings/{id}/lineage", s.findingLineage)
 	mux.HandleFunc("POST /api/exploration/findings/{id}/deepen", s.deepenFinding)
@@ -1714,6 +1716,9 @@ type createTaskReq struct {
 	CoverageEnabled      *bool            `json:"coverage_enabled,omitempty"` // 资产覆盖度功能;省略/null=默认开(true)。false=关闭覆盖度计算/展示/自动累积范围+隐藏 add_task_scope/list_untested_assets。company 关联不受影响。
 	Remark               string           `json:"remark,omitempty"`           // 任务备注(最多2000字);空=无
 	WorkerCount          int              `json:"worker_count,omitempty"`     // 本任务 Worker 数;0/省略=用全局默认;上限50
+	// RulePack 选择内置 SRC 规则集（edusrc / enterprise）。安装后其「不收」清单落成
+	// task_constraints 的 deny 行，planner/worker 每轮把它注入 system prompt。
+	RulePack string `json:"rule_pack,omitempty"`
 	// InterceptRules 任务级资产拦截/允许规则(创建时录入,存 task_intercept_rules,不进全局表)。
 	InterceptRules []taskInterceptRuleReq `json:"intercept_rules,omitempty"`
 }
@@ -1814,6 +1819,15 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("[task] 新建任务 #%s «%s» 目标: %s", t.ID, req.Description, req.Goal)
+	// 规则集：把「不收」清单固化成 deny 硬约束（定级口径由 planner/worker 提示注入）。
+	// 失败不阻断建任务——规则集是增强，不能因为一次写入失败让任务建不出来。
+	if req.RulePack != "" {
+		if n, err := agent.InstallRulePack(t.Store, req.RulePack); err != nil {
+			log.Printf("[task] task %s: 安装规则集 %q 失败: %v", t.ID, req.RulePack, err)
+		} else {
+			log.Printf("[task] task %s: 已安装规则集 %q（%d 条硬约束）", t.ID, req.RulePack, n)
+		}
+	}
 	// 共享的建后流程(seed + 种子意图 + 后台目标分解 + engine.Run),与 spawn_task 复用同一段。
 	// launchTask 内部异步,不阻塞 UI —— 目标分解在后台可见地进行。
 	if schedule == nil || schedule.StartImmediately {
