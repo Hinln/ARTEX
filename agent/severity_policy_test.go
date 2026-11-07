@@ -19,14 +19,14 @@ func TestPolicyRejectsWhatSrcRefuses(t *testing.T) {
 
 func TestPolicyGradeMatchesEduTable(t *testing.T) {
 	cases := map[string]int{
-		"命令执行":  4,
+		"命令执行":       4,
 		"上传webshell": 4,
-		"SQL注入":  3,
-		"认证绕过":  3,
-		"水平越权":  2,
-		"SSRF":   2,
-		"存储型XSS": 2,
-		"信息泄露":  1,
+		"SQL注入":      3,
+		"认证绕过":       3,
+		"水平越权":       2,
+		"SSRF":       2,
+		"存储型XSS":     2,
+		"信息泄露":       1,
 	}
 	for class, want := range cases {
 		got, why := PolicyGrade(class)
@@ -76,5 +76,75 @@ func TestStrictSensitiveNeedsTheFourKinds(t *testing.T) {
 	}
 	if ok, _ := StrictSensitive("password_hash: $2a$10$abcdefghijklmnopqrstuv"); !ok {
 		t.Fatalf("bcrypt hash should count")
+	}
+}
+
+func TestEnterprisePolicyKeepsReflectedXSSAsLow(t *testing.T) {
+	// OPPO 把反射型 XSS 定为低危，而 EduSRC 直接不收 —— 换口径不能一律套 EduSRC。
+	if _, ok := RejectReasonFor("edu", "反射型XSS", ""); !ok {
+		t.Fatal("edu should reject reflected xss")
+	}
+	if why, ok := RejectReasonFor("enterprise", "反射型XSS", ""); ok {
+		t.Fatalf("enterprise should keep reflected xss, rejected with: %s", why)
+	}
+	if rank, why := PolicyGradeFor("enterprise", "反射型XSS", ""); rank != 1 {
+		t.Fatalf("enterprise reflected xss rank = %d (%s), want 1", rank, why)
+	}
+}
+
+func TestEnterprisePolicyRejectsWhatOppoRefuses(t *testing.T) {
+	cases := []string{
+		"内网IP泄露", "扫描器报告命中", "中间件版本号", "Self-XSS", "缺少安全响应头",
+		"用户名枚举", "SSL配置不当", "混合内容", "公开登录面板", "无法重现的漏洞",
+	}
+	for _, c := range cases {
+		if why, ok := RejectReasonFor("enterprise", c, ""); !ok {
+			t.Fatalf("%s should be rejected under enterprise policy", c)
+		} else if why == "" {
+			t.Fatalf("%s rejected without a reason", c)
+		}
+	}
+}
+
+func TestEnterprisePolicyGradesByOppoDefinitions(t *testing.T) {
+	cases := []struct {
+		class    string
+		evidence string
+		rank     int
+	}{
+		{"SQL注入", "核心库 资金 订单接口 dump 出 30 万条", 4},
+		{"命令执行", "uid=0(root)", 4},
+		{"任意账号密码修改", "", 4},
+		{"SQL注入", "非核心库报错注入", 3},
+		{"SSRF", "打到 169.254.169.254 拿到临时凭证", 3},
+		{"SSRF", "仅探测内网存活", 2},
+		{"越权", "改密接口越权重置他人密码", 3},
+		{"越权", "查看他人普通订单列表", 2},
+		{"存储型XSS", "可在重要页面自动传播并获取 Cookie", 3},
+		{"存储型XSS", "需要受害者交互才会触发", 2},
+		{"路径遍历", "读取 /etc/passwd", 2},
+		{"短信轰炸", "单 IP 半小时 200 条", 1},
+	}
+	for _, c := range cases {
+		if got, why := PolicyGradeFor("enterprise", c.class, c.evidence); got != c.rank {
+			t.Fatalf("%s / %q rank = %d (%s), want %d", c.class, c.evidence, got, why, c.rank)
+		}
+	}
+}
+
+func TestEnterpriseCalibrationCapsAtPolicy(t *testing.T) {
+	// 声明 critical，但 OPPO 口径下反射型 XSS 只能到低危。
+	got, changed, note := CalibrateSeverityFor("enterprise", "反射型XSS", "HTTP/1.1 200 OK\nContent-Type: text/html", "critical")
+	if got != "low" || !changed || note == "" {
+		t.Fatalf("enterprise calibration = %s changed=%v note=%q, want low", got, changed, note)
+	}
+}
+
+func TestPolicyNameIsReadable(t *testing.T) {
+	if PolicyName("enterprise") == PolicyName("edu") {
+		t.Fatal("policy names must differ")
+	}
+	if PolicyName("") != "EduSRC" {
+		t.Fatalf("default policy name = %q", PolicyName(""))
 	}
 }

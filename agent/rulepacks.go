@@ -41,8 +41,11 @@ type RulePack struct {
 	// cannot finish an intent without having recorded assets and evidence.
 	Requires []string
 	Reject   []string // each entry becomes a deny constraint at install time
-	Proof  string   // harmless-evidence contract for write/delete/update findings
-	Grades []SeverityLevel
+	Proof    string   // harmless-evidence contract for write/delete/update findings
+	Grades   []SeverityLevel
+	// Policy selects the grading table: "edu" (EduSRC) or "enterprise".
+	Policy string
+
 	// ReproduceMinSeverity is the lowest severity that must be re-verified by the
 	// system before it may enter the human review queue.
 	ReproduceMinSeverity string
@@ -69,9 +72,10 @@ func RulePackByKey(key string) (RulePack, bool) {
 
 func eduSRCPack() RulePack {
 	return RulePack{
-		Key:   "edusrc",
-		Name:  "EduSRC（教育行业）",
-		Blurb: "按实际危害定级；敏感数据只认四类；轰炸/反射 XSS/无实证泄露不收。",
+		Key:    "edusrc",
+		Name:   "EduSRC（教育行业）",
+		Policy: "edu",
+		Blurb:  "按实际危害定级；敏感数据只认四类；轰炸/反射 XSS/无实证泄露不收。",
 		Scope: "敏感数据只认四类：身份证照片、人脸/大头照、身份证号码、密码哈希或明文口令。" +
 			"其它（姓名/手机号/邮箱/地址/订单/校区/统计/运行状态/公开列表）默认不算敏感数据。",
 		Accept: []string{
@@ -114,9 +118,10 @@ func eduSRCPack() RulePack {
 
 func enterprisePack() RulePack {
 	return RulePack{
-		Key:   "enterprise",
-		Name:  "企业 SRC",
-		Blurb: "围绕客户/员工/订单等受限数据与关键业务写操作定级；理论风险与半成品不收。",
+		Key:    "enterprise",
+		Name:   "企业 SRC",
+		Policy: "enterprise",
+		Blurb:  "围绕客户/员工/订单等受限数据与关键业务写操作定级；理论风险与半成品不收。",
 		Scope: "受限数据：客户、员工、订单、合同、发票、供应商、工单、审批、财务、内部配置；" +
 			"以及可用账号 / Token / Session / JWT / API Key / 云凭证 / 数据库密码 / 密码哈希。",
 		Accept: []string{
@@ -244,6 +249,14 @@ func installRulePack(ts *db.ExplorationStore, p RulePack, origin string) (int, e
 	return n, nil
 }
 
+// PolicyForStore reports which grading table a task uses ("edu" or "enterprise").
+func PolicyForStore(ts *db.ExplorationStore) string {
+	if p, ok := activeRulePack(ts); ok && p.Policy != "" {
+		return p.Policy
+	}
+	return "edu"
+}
+
 // ReproduceMinSeverityFor reports the reproduce floor of the pack a task runs
 // under, or "" when no pack is installed. The server feeds this to its
 // reproducer so the floor is a property of the pack instead of a constant
@@ -309,7 +322,10 @@ func rulePackPrompt(p RulePack) string {
 		b.WriteString(a)
 		b.WriteByte('\n')
 	}
-	b.WriteString("定级口径（severity 必填其一，按实际危害而非漏洞类型标签）：\n")
+	b.WriteString("定级口径：")
+	b.WriteString(PolicyName(p.Policy))
+	b.WriteString("（等级由代码按该口径封顶，填高了会被降下来，别灌水）\n")
+	b.WriteString("severity 必填其一，按实际危害而非漏洞类型标签：\n")
 	for _, g := range p.Grades {
 		b.WriteString("- ")
 		b.WriteString(g.Level)

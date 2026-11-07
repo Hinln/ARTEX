@@ -131,6 +131,11 @@ func evidenceCeiling(evidence string) (int, string) {
 // CalibrateSeverity 把模型自报的等级按类别与证据压到真实上限。
 // 返回最终等级、是否被改、以及给模型看的原因。
 func CalibrateSeverity(class, evidence, claimed string) (string, bool, string) {
+	return CalibrateSeverityFor("edu", class, evidence, claimed)
+}
+
+// CalibrateSeverityFor 按所选 SRC 口径做三重上限校准。
+func CalibrateSeverityFor(policy, class, evidence, claimed string) (string, bool, string) {
 	want, ok := severityRanks[strings.ToLower(strings.TrimSpace(claimed))]
 	if !ok {
 		want = rankMedium
@@ -139,7 +144,7 @@ func CalibrateSeverity(class, evidence, claimed string) (string, bool, string) {
 	evCap, evWhy := evidenceCeiling(evidence)
 	// Policy is the SRC's own grade table: a class the platform files as 中危
 	// cannot be published as 严重 just because the model wrote 严重.
-	polCap, polWhy := PolicyGrade(class)
+	polCap, polWhy := PolicyGradeFor(policy, class, evidence)
 
 	final := want
 	reasons := make([]string, 0, 3)

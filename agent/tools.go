@@ -1313,7 +1313,7 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 		if okEvidence, why := VerifyEvidence(sess, a.Evidence); !okEvidence {
 			return actool.Errorf("漏洞未入库：" + why), nil
 		}
-		if why, rejected := RejectReason(a.VulnClass, a.Summary); rejected {
+		if why, rejected := RejectReasonFor(PolicyForStore(t.ts), a.VulnClass, a.Summary); rejected {
 			return actool.Errorf("「" + a.VulnClass + "」不收录：" + why + "。换方向，或把利用链打穿到拿数据/接管后再交。"), nil
 		}
 		// 信息级类别默认不收，但敏感信息泄露是例外：只有命中四类死规矩数据才算。
@@ -1321,7 +1321,7 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 		if InfoOnlyClass(a.VulnClass) && !strict {
 			return actool.Errorf("「" + a.VulnClass + "」属于信息级发现（内网 IP、端口、版本、指纹这类），不单独收录为漏洞。请改用 record_fact 记录，并把它当探索线索；只有证明由此能进一步访问/利用时，再作为漏洞上报并贴出那一步的真实回显。"), nil
 		}
-		a.Severity, _, severityNote = CalibrateSeverity(a.VulnClass, a.Evidence, a.Severity)
+		a.Severity, _, severityNote = CalibrateSeverityFor(PolicyForStore(t.ts), a.VulnClass, a.Evidence, a.Severity)
 		if strict && rankOfSeverity(a.Severity) < strictRank {
 			a.Severity = RankName(strictRank)
 			severityNote = joinNote(severityNote, "证据命中敏感信息四类死规矩数据，按「敏感信息泄露」计 "+RankName(strictRank))
