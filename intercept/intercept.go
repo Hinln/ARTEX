@@ -244,7 +244,13 @@ func (i *Interceptor) IsToolEnabled(name string) bool {
 	if i.enabledTools == nil {
 		_ = i.loadLocked()
 	}
-	return i.enabledTools[name]
+	if i.enabledTools[name] {
+		return true
+	}
+	// MCP tools are discovered at runtime and never appear in the configured
+	// audience list, which silently exempted every mcp__server__tool from the
+	// rules. They are in scope now; an explicit rule decides what happens.
+	return strings.HasPrefix(name, "mcp__")
 }
 
 // GetEnabledTools returns the ordered list of tool names that are currently

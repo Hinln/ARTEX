@@ -22,6 +22,7 @@ var nativeNetTools = map[string]bool{
 	// icp_lookup only touches the engagement host in footer mode; the other
 	// directions read a third-party index and are deliberately unbudgeted.
 	"icp_lookup": true,
+	"http_fuzz":  true,
 }
 
 // nativeNetHosts pulls target hosts out of a native tool's JSON arguments.

@@ -88,6 +88,29 @@ func (g *Guard) preToolUse(ctx context.Context, ev hook.Event) hook.Result {
 		g.gate.acquire(cmd)
 		g.gate.allow(session)
 	}
+	// MCP calls are free-form JSON and never look like Bash, so neither the
+	// command rules nor the host budget used to see them. Pull both out of the
+	// arguments and run the same gate: a shell-style MCP server is otherwise a
+	// free bypass of everything above.
+	if cmds, hosts := mcpCall(ev.ToolName, ev.Input); len(cmds) > 0 || len(hosts) > 0 {
+		session := strconv.FormatInt(intercept.ConvIDFromContext(ctx), 10)
+		if len(cmds) > 0 {
+			joined := strings.Join(cmds, " ; ")
+			if v := g.gate.check(session, joined); v.Deny {
+				g.record(ev.ToolName, "block", v.Rule+": "+v.Reason, joined)
+				return g.block(ev.ToolName, systemBlockMessage("[MCP 闸门 "+v.Rule+"] "+strings.TrimSuffix(v.Reason, "。")), "")
+			}
+			g.gate.acquire(joined)
+		}
+		if len(hosts) > 0 {
+			if v := g.gate.checkHosts(session, hosts); v.Deny {
+				g.record(ev.ToolName, "block", v.Rule+": "+v.Reason, "")
+				return g.block(ev.ToolName, systemBlockMessage("[MCP 闸门 "+v.Rule+"] "+strings.TrimSuffix(v.Reason, "。")), "")
+			}
+			g.gate.acquireHosts(hosts)
+		}
+		g.gate.allow(session)
+	}
 	// Native recon tools reach the network without a shell command, so the host
 	// budget has to be applied to them explicitly.
 	if hosts := nativeNetHosts(ev.ToolName, ev.Input); len(hosts) > 0 {
