@@ -23,6 +23,7 @@ var nativeNetTools = map[string]bool{
 	// directions read a third-party index and are deliberately unbudgeted.
 	"icp_lookup": true,
 	"http_fuzz":  true,
+	"authz_diff": true,
 }
 
 // nativeNetHosts pulls target hosts out of a native tool's JSON arguments.

@@ -672,6 +672,9 @@ func (t *ToolSet) WorkerTools() []actool.CoreTool {
 		t.subdomainVerify(),
 		t.icpLookup(),
 		t.httpFuzz(),
+	t.authzDiff(),
+	t.oobArm(),
+	t.oobCheck(),
 		// node_detail：worker 拿到 intent_id/节点 id 后可查该节点完整详情（配合上面的回看）。
 		t.nodeDetail(),
 		// 以下工具仍【不给】worker，只留给 planner/main（读上下文、跨 work 复盘是规划职责，

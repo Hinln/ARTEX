@@ -2115,6 +2115,9 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		t.subdomainVerify(),
 		t.icpLookup(),
 		t.httpFuzz(),
+		t.authzDiff(),
+		t.oobArm(),
+		t.oobCheck(),
 		t.graphOverview(), t.listFindings(), t.listFacts(), t.nodeDetail(),
 		// cold-digest §6.1: restore folded cold nodes (digest body → members → detail).
 		t.expandDigest(),
