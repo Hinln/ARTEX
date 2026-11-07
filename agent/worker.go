@@ -366,6 +366,15 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	// base = built-in worker tools ∪ host tools (traffic) ∪ default tools (incl. Bash);
 	// then augment with the agent's visible skills/MCP. During the SDK settlement
 	// phase, Bash is hidden via Settlement.DisabledTools (no local gating needed).
+	// http_request must reach the target through the recording proxy; without
+	// this its traffic never lands in the evidence store.
+	{
+		addr := w.proxyAddr
+		if w.proxyAddrFn != nil {
+			addr = w.proxyAddrFn()
+		}
+		tsx.SetEgress(addr, w.proxyCACert)
+	}
 	base := append(tsx.WorkerTools(), w.extraTools...)
 	// worker 刻意不给 MultiEdit/Glob/Grep：文件精改用 Edit、检索走 Bash(grep/find)，
 	// 收敛工具面、减少低价值调用。其余 SDK 默认工具(Read/Write/Edit/LS/Bash/Sleep)照常。

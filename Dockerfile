@@ -40,6 +40,8 @@ COPY dist/${TARGETARCH}/artex /app/artex
 COPY start.sh /app/start.sh
 RUN chmod +x /app/artex /app/start.sh
 COPY skills/ /app/skills/
+# FOFA 采集脚本：recon 的 MCP server 以 python3 /app/mcp/fofa_mcp.py 拉起它。
+COPY mcp/ /app/mcp/
 # data/（SQLite + jwt.key）持久化点
 VOLUME ["/app/data"]
 EXPOSE 8787 8788

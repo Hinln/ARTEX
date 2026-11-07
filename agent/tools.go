@@ -63,6 +63,10 @@ type ToolSet struct {
 	// auto-scope hook (insertAssets) is skipped, and add_task_scope/list_untested_assets
 	// are filtered out of the agent's tool list. The scope field stays regardless.
 	coverageDisabled bool
+	// egressProxy/egressCA route the native http_request tool through the same
+	// recording proxy Bash uses, so its traffic reaches the evidence store.
+	egressProxy string
+	egressCA    string
 	// ownerNode is the exploration node that writes attach to: assets this run
 	// touches get anchored to it as lineage/provenance (NOT visibility — the asset
 	// graph is global and shared). Worker = its claimed intent; planner = begin root.
@@ -1274,7 +1278,9 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 		"evidence_hint_id": idp("可选：本任务中对应此漏洞的提示节点 ID，自动携带其结构化 traffic_refs；不能引用继承提示或其他漏洞的提示"),
 		"traffic_refs": map[string]any{"type": "array", "description": "可选；HTTP/HTTPS 漏洞先检索并逐条核实请求/响应确实支持漏洞结论，再按复现顺序填写真实 ID。TCP 等非 HTTP 漏洞、未采集或找不到确切记录时省略或传 []，不阻止上报；可在 evidence 说明原因并提供其他可验证证据。不要猜测 ID、按域名/时间推定关联或仅为补包重复探测。用途 baseline 正常对照 / proof 漏洞证明 / verification 补充验证 / supporting 辅助证据。",
 			"items": obj(map[string]any{"traffic_id": str("traffic_search 返回的真实流量 ID"), "role": map[string]any{"type": "string", "enum": []string{"baseline", "proof", "verification", "supporting"}}, "note": str("该流量如何支持漏洞结论")}, "traffic_id")},
-	}, "vulnclass", "severity", "summary"), func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
+		// evidence is required: a finding without a pasteable command output or raw
+		// response is an assertion, and the system has nothing to re-check it against.
+	}, "vulnclass", "severity", "summary", "evidence"), func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
 		var a struct {
 			VulnClass, Name, Severity, Summary, Evidence string
 			IntentID                                     json.RawMessage   `json:"intent_id"`
@@ -1284,6 +1290,9 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 		}
 		if err := json.Unmarshal(in, &a); err != nil {
 			return actool.Errorf(err.Error()), nil
+		}
+		if strings.TrimSpace(a.Evidence) == "" {
+			return actool.Errorf("report_finding 需要 evidence：贴出复现该漏洞的真实命令输出或原始响应；没有可复核证据的结论不入库。"), nil
 		}
 		if t.ts == nil {
 			return actool.Errorf("report_finding 需要任务上下文；平台对话请通过 add_task_hint 向对应任务交接漏洞，并在提示中携带已有的 traffic_refs，由任务 Agent 登记。已登记漏洞可用 bind_finding_traffic 补绑。"), nil
@@ -2098,6 +2107,7 @@ func (t *ToolSet) listWorkerTraces() actool.CoreTool {
 // PlannerTools is the read + intent-generation + goal-judgement tool set.
 func (t *ToolSet) PlannerTools() []actool.CoreTool {
 	return []actool.CoreTool{
+		t.httpRequest(), // single-point validation without a shell
 		t.graphOverview(), t.listFindings(), t.listFacts(), t.nodeDetail(),
 		// cold-digest §6.1: restore folded cold nodes (digest body → members → detail).
 		t.expandDigest(),

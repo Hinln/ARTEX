@@ -11,6 +11,8 @@ import (
 	"context"
 	"encoding/json"
 	"regexp"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -34,6 +36,7 @@ type Guard struct {
 	attrib      map[string]int // failure attribution counts (Observer / G5)
 	reg         *hook.Registry
 	interceptor *intercept.Interceptor // optional; nil disables user-configured rules
+	gate        *cmdGate               // hard command gate: shapes, rate, breaker
 }
 
 // New creates a Guard without user-configured intercept rules (used for pentest
@@ -44,7 +47,7 @@ func New() *Guard { return newGuard(nil) }
 func NewWithInterceptor(ic *intercept.Interceptor) *Guard { return newGuard(ic) }
 
 func newGuard(ic *intercept.Interceptor) *Guard {
-	g := &Guard{attrib: map[string]int{}, interceptor: ic}
+	g := &Guard{attrib: map[string]int{}, interceptor: ic, gate: newCmdGate(loadGateConfig())}
 	g.reg = hook.NewRegistry().
 		On(hook.PreToolUse, g.preToolUse).
 		On(hook.PostToolUse, g.postToolUse)
@@ -73,6 +76,17 @@ func (g *Guard) preToolUse(ctx context.Context, ev hook.Event) hook.Result {
 		}
 		_ = json.Unmarshal(ev.Input, &in)
 		cmd = in.Text
+	}
+	// Hard gate runs before any rule evaluation: rule packs and intercept rules are
+	// prompt text, and prompt text does not stop `nmap -p-`.
+	if cmd != "" {
+		session := strconv.FormatInt(intercept.ConvIDFromContext(ctx), 10)
+		if v := g.gate.check(session, cmd); v.Deny {
+			g.record(ev.ToolName, "block", v.Rule+": "+v.Reason, cmd)
+			return g.block(ev.ToolName, systemBlockMessage("[命令闸门 "+v.Rule+"] "+strings.TrimSuffix(v.Reason, "。")), "")
+		}
+		g.gate.acquire(cmd)
+		g.gate.allow(session)
 	}
 	g.record(ev.ToolName, "allow", "", cmd)
 	return g.applyIntercept(ctx, ev)
@@ -148,6 +162,14 @@ var reBlocked = regexp.MustCompile(`(?i)\b(403|forbidden|waf|blocked|rate.?limit
 func (g *Guard) postToolUse(_ context.Context, ev hook.Event) hook.Result {
 	if ev.ToolName != "Bash" {
 		return hook.Result{}
+	}
+	// Release the rate-limiter slot taken in preToolUse.
+	if g.gate != nil {
+		var in struct {
+			Command string `json:"command"`
+		}
+		_ = json.Unmarshal(ev.Input, &in)
+		g.gate.done(in.Command)
 	}
 	class := "ok"
 	switch {

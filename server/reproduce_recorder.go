@@ -49,6 +49,7 @@ func (r *ReproduceRecorder) Record(ctx context.Context, in db.RecordFindingInput
 	res, err := r.repro.Reproduce(ctx, out.FindingID)
 	if err != nil {
 		log.Printf("[reproduce] finding %d: 复现失败: %v", out.FindingID, err)
+		r.syncConfidence(ctx, out.FindingID)
 		return out, nil
 	}
 	ids := make([]string, 0, len(res.TrafficIDs))
@@ -68,8 +69,21 @@ func (r *ReproduceRecorder) Record(ctx context.Context, in db.RecordFindingInput
 	})
 	if recErr != nil {
 		log.Printf("[reproduce] finding %d: 记录复现结论失败: %v", out.FindingID, recErr)
+		r.syncConfidence(ctx, out.FindingID)
 		return out, nil
 	}
 	log.Printf("[reproduce] finding %d severity=%s → %s (%s)", out.FindingID, in.Severity, res.State, res.Reason)
 	return out, nil
+}
+
+// syncConfidence mirrors a completed verification attempt into the finding's
+// confidence. Without it a finding whose replay failed stayed "confirmed"
+// because the model had asserted it; confidence is a property of the evidence.
+func (r *ReproduceRecorder) syncConfidence(ctx context.Context, findingID int64) {
+	if r == nil || r.pg == nil || findingID <= 0 {
+		return
+	}
+	if err := r.pg.SyncFindingConfidence(ctx, findingID); err != nil {
+		log.Printf("[reproduce] finding %d: 复现结论同步失败: %v", findingID, err)
+	}
 }

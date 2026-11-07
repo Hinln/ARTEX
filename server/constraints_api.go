@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -81,6 +82,7 @@ func (s *Server) addConstraint(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
+	s.notifyConstraintChange(t, "新增", kind, text)
 	writeJSON(w, 200, ConstraintDTO{ID: strconv.FormatInt(id, 10), Kind: kind, Text: text, Origin: "human"})
 }
 
@@ -124,6 +126,7 @@ func (s *Server) editConstraint(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
+	s.notifyConstraintChange(t, "修改", kind, text)
 	writeJSON(w, 200, ConstraintDTO{ID: strconv.FormatInt(cid, 10), Kind: kind, Text: text})
 }
 
@@ -149,6 +152,7 @@ func (s *Server) deleteConstraint(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
+	s.notifyConstraintChange(t, "删除", "constraint", strconv.FormatInt(cid, 10))
 	writeJSON(w, 200, map[string]bool{"ok": true})
 }
 
@@ -174,4 +178,25 @@ func constraintDTOs(in []db.Constraint) []ConstraintDTO {
 		})
 	}
 	return out
+}
+
+// notifyConstraintChange pushes a constraint change into every worker currently
+// running for this task. The constraint block is rebuilt into the system prompt
+// at the start of each round, so without this a live worker keeps enforcing the
+// rule set it started with until its run ends.
+func (s *Server) notifyConstraintChange(t *Task, action, kind, text string) {
+	if s == nil || s.engine == nil || t == nil || t.Store == nil {
+		return
+	}
+	msg := fmt.Sprintf("【操作约束变更·立即生效】%s %s：%s。本条凌驾于此前任何探索方向，冲突时以本条为准。", action, kind, text)
+	intents, err := t.Store.ListByKind(db.KindIntent, 300)
+	if err != nil {
+		return
+	}
+	for _, n := range intents {
+		if n == nil || n.State != "running" {
+			continue
+		}
+		_ = s.engine.SteerWork(n.ID, msg)
+	}
 }

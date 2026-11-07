@@ -586,7 +586,7 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	// 发现记录器：包一层复现校验。severity=critical/high 的漏洞在落库后由系统
 	// 重放其绑定的 proof 流量并落一条机器结论；模型自评不参与「是否已复现」。
 	// 复现失败不回滚漏洞（那会丢真实产出），只把 confidence 压到 likely。
-	findings := s.findingRecorder()
+	findings := s.findingRecorderForTask(t)
 	window := workerRuntime.CompactionWindow()
 	wk := agent.NewWorker(workerRuntime, "task-router", s.m.dir, tx, window, s.agentMaxTurns("worker"))
 	wk.SetFindingRecorder(findings)
@@ -662,7 +662,7 @@ func (s *Server) workerForTaskSlot(t *Task, slot WorkerSlot) (*agent.Worker, err
 	runtime := &taskLLMRuntime{s: s, taskID: t.ID, agentKey: "worker", pinProfileID: &id}
 	tx := transcript.NewStore(filepath.Join(s.m.dir, "transcripts"))
 	worker := agent.NewWorker(runtime, cfg.Model, s.m.dir, tx, runtime.CompactionWindow(), s.agentMaxTurns("worker"))
-	worker.SetFindingRecorder(s.findingRecorder())
+	worker.SetFindingRecorder(s.findingRecorderForTask(t))
 	worker.SetCompactionWindowResolver(runtime.CompactionWindow)
 	worker.SetNonStreaming(runtime.nonStreaming)
 	worker.SetMaxTokens(runtime.maxTokens)

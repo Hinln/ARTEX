@@ -564,22 +564,32 @@ func judgeActionLabel(action string) string {
 	}
 }
 
-// Match evaluates the rule list (priority DESC) against a tool call.
-// Returns (Decision, true) for the first matching enabled rule, or
-// (Decision{}, false) if no rule matches.
+// Match evaluates the rule list against a tool call and returns the verdict with
+// the strictest action, not the first one that happens to be enabled.
+//
+// A first-match-wins loop here made a single high-priority allow row a backdoor
+// for the whole table: one "allow curl" at priority 100 silenced every deny below
+// it. Rules are therefore collected across the list and resolved deny > ask >
+// allow, with priority breaking ties inside the same action.
 func (i *Interceptor) Match(toolName string, input []byte) (Decision, bool) {
 	rules, err := i.rules()
 	if err != nil || len(rules) == 0 {
 		return Decision{}, false
 	}
+	var best Decision
+	bestRank := -1
 	for _, r := range rules {
-		if ruleMatches(r, toolName, input) {
+		if !ruleMatches(r, toolName, input) {
+			continue
+		}
+		rank := actionRank(r.Action)
+		if rank > bestRank {
 			msg := r.Message
 			if msg == "" {
 				msg = defaultMessage(r.Action, r.Name)
 			}
 			configJSON, _ := json.Marshal(r.InterceptRule)
-			return Decision{
+			best = Decision{
 				RuleName: r.Name, ConfigDigest: digestInput(configJSON),
 				Action:         r.Action,
 				Message:        msg,
@@ -587,10 +597,29 @@ func (i *Interceptor) Match(toolName string, input []byte) (Decision, bool) {
 				TimeoutEnabled: r.TimeoutEnabled,
 				TimeoutSeconds: r.TimeoutSeconds,
 				TimeoutAction:  r.TimeoutAction,
-			}, true
+			}
+			bestRank = rank
 		}
 	}
-	return Decision{}, false
+	if bestRank < 0 {
+		return Decision{}, false
+	}
+	return best, true
+}
+
+// actionRank orders actions by strictness. Unknown actions rank below allow so a
+// typo in a rule cannot escalate to a block.
+func actionRank(action string) int {
+	switch action {
+	case "deny":
+		return 3
+	case "ask":
+		return 2
+	case "allow":
+		return 1
+	default:
+		return 0
+	}
 }
 
 func ruleMatches(r compiledRule, toolName string, input []byte) bool {

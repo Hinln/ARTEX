@@ -83,3 +83,22 @@ func (s *ExplorationStore) DeleteConstraint(id int64) error {
 	}
 	return nil
 }
+
+// DeleteConstraintsByOrigin removes every constraint this exploration owns under
+// one origin and returns how many rows went away.
+//
+// Reinstalling a rule pack without this left the previous pack's deny rows in
+// place forever: switching edusrc -> enterprise kept 12 edusrc rows live, while
+// the marker row still named the old pack, so the prompt rendered the old list
+// and the UI showed both.
+func (s *ExplorationStore) DeleteConstraintsByOrigin(origin string) (int64, error) {
+	if origin == "" {
+		return 0, fmt.Errorf("origin 不能为空")
+	}
+	res, err := s.db.Exec(`DELETE FROM task_constraints WHERE exploration_id=$1 AND origin=$2`, s.expID, origin)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}

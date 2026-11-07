@@ -12,18 +12,32 @@ import (
 	"testing"
 )
 
-// Only severities at or above the pack threshold require verification.
+// Only severities at or above the pack threshold require verification. Chinese
+// labels count: an agent writing 严重 means the same thing as critical, and
+// matching bare English literals let it skip the gate entirely. An unrecognised
+// label fails closed — an extra replay costs a request, a skipped one costs the
+// credibility of the whole finding list.
 func TestReproducerNeeded(t *testing.T) {
 	r := &Reproducer{minLevel: "high"}
-	for _, sev := range []string{"critical", "high", "CRITICAL", " High "} {
+	for _, sev := range []string{"critical", "high", "CRITICAL", " High ", "严重", "高危", "严重漏洞", "", "unrated"} {
 		if !r.Needed(sev) {
 			t.Fatalf("%q must require reproduction", sev)
 		}
 	}
-	for _, sev := range []string{"medium", "low", "", "info"} {
+	for _, sev := range []string{"medium", "low", "info", "中危", "低危", "信息"} {
 		if r.Needed(sev) {
 			t.Fatalf("%q must not require reproduction", sev)
 		}
+	}
+	// The floor belongs to the pack, not to a constant: a pack asking for medium
+	// verification gets it.
+	med := &Reproducer{minLevel: "medium"}
+	if !med.Needed("中危") {
+		t.Fatal("medium floor must require medium findings")
+	}
+	med.SetMinLevel("")
+	if med.minLevel != "medium" {
+		t.Fatalf("empty level must keep the current floor, got %q", med.minLevel)
 	}
 }
 

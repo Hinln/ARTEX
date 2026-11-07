@@ -31,8 +31,24 @@ func (s *Server) evidenceStore() *evidence.Store {
 // actually saw. It is wired here (not in the tool) so every agent that can report
 // a finding gets it without each call site opting in.
 func (s *Server) findingRecorder() FindingRecorder {
+	return s.findingRecorderAt("")
+}
+
+// findingRecorderForTask binds the reproducer's verification floor to the pack
+// this task installed, so a pack that requires medium findings to be replayed
+// gets that without a constant living in reproduce.go.
+func (s *Server) findingRecorderForTask(t *Task) FindingRecorder {
+	if t == nil || t.Store == nil {
+		return s.findingRecorderAt("")
+	}
+	return s.findingRecorderAt(agent.ReproduceMinSeverityFor(t.Store))
+}
+
+func (s *Server) findingRecorderAt(minLevel string) FindingRecorder {
 	store := s.evidenceStore()
-	return NewReproduceRecorder(store, NewReproducer(store, s.m.pg, s.m.ProxyAddr(), s.m.ProxyCACert()), s.m.pg)
+	repro := NewReproducer(store, s.m.pg, s.m.ProxyAddr(), s.m.ProxyCACert())
+	repro.SetMinLevel(minLevel)
+	return NewReproduceRecorder(store, repro, s.m.pg)
 }
 
 // Add only new optional properties; preserve edited descriptions, existing

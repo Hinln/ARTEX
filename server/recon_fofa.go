@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -25,7 +26,20 @@ import (
 )
 
 const reconFOFAServer = "fofa"
-const reconFOFAScript = "/app/mcp/fofa_mcp.py"
+// reconFOFAScriptPath reports where the FOFA MCP server script lives. The image
+// ships it at /app/mcp; ARTEX_FOFA_SCRIPT overrides the path so a host run can
+// point at the checkout, and a plain checkout is probed last.
+func reconFOFAScriptPath() string {
+	if v := strings.TrimSpace(os.Getenv("ARTEX_FOFA_SCRIPT")); v != "" {
+		return v
+	}
+	for _, p := range []string{"/app/mcp/fofa_mcp.py", "mcp/fofa_mcp.py"} {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return "/app/mcp/fofa_mcp.py"
+}
 
 // fofaKeyEntry 是前端看到的一条 key。Value 只在写入时使用，读取时永远为空。
 type fofaKeyEntry struct {
@@ -151,7 +165,7 @@ func (s *Server) saveFOFARecon(w http.ResponseWriter, r *http.Request) {
 			Name:      reconFOFAServer,
 			Transport: "stdio",
 			Command:   "python3",
-			Args:      json.RawMessage(`["` + reconFOFAScript + `"]`),
+			Args:      json.RawMessage(`["` + reconFOFAScriptPath() + `"]`),
 			Env:       json.RawMessage(`{}`),
 		}
 	}
@@ -192,7 +206,7 @@ func (s *Server) saveFOFARecon(w http.ResponseWriter, r *http.Request) {
 	existing.Transport = "stdio"
 	existing.Command = "python3"
 	if len(existing.Args) == 0 || string(existing.Args) == "" || string(existing.Args) == "null" {
-		existing.Args = json.RawMessage(`["` + reconFOFAScript + `"]`)
+		existing.Args = json.RawMessage(`["` + reconFOFAScriptPath() + `"]`)
 	}
 	id, err := pg.SaveMCP(existing)
 	if err != nil {

@@ -181,8 +181,9 @@ func RulePackKeys() []string {
 }
 
 // installRulePack writes a pack's hard boundaries into the task's constraints.
-// Idempotent: if the exploration already carries this pack's rows, it does
-// nothing. Returns how many deny rows were created.
+// Replacing a pack is a replace, not a merge: rows owned by this origin are
+// cleared first, otherwise edusrc's deny list survived an enterprise install and
+// the task kept enforcing a standard the operator had moved away from.
 func installRulePack(ts *db.ExplorationStore, p RulePack, origin string) (int, error) {
 	if ts == nil || p.Key == "" {
 		return 0, nil
@@ -194,30 +195,51 @@ func installRulePack(ts *db.ExplorationStore, p RulePack, origin string) (int, e
 	if err != nil {
 		return 0, err
 	}
-	seen := map[string]bool{}
+	current := ""
 	for _, c := range existing {
-		if c.Origin == origin {
-			seen[c.Text] = true
+		if c.Origin == origin && c.Kind == "allow" {
+			current = c.Text
+			break
 		}
+	}
+	// Same pack already installed: no-op keeps createTask idempotent.
+	if current == p.Key {
+		n := 0
+		for _, c := range existing {
+			if c.Origin == origin && c.Kind == "deny" {
+				n++
+			}
+		}
+		return n, nil
+	}
+	if _, err := ts.DeleteConstraintsByOrigin(origin); err != nil {
+		return 0, err
 	}
 	n := 0
-	// Marker row first: its presence is what makes a re-run a no-op and what
-	// activeRulePack reads back to know which pack this task runs under.
-	if !seen[p.Key] {
-		if _, err := ts.AddConstraint("allow", p.Key, origin); err != nil {
-			return 0, err
-		}
+	// Marker row first: its presence is what activeRulePack reads back to know
+	// which pack this task runs under.
+	if _, err := ts.AddConstraint("allow", p.Key, origin); err != nil {
+		return 0, err
 	}
 	for _, text := range p.Reject {
-		if seen[text] {
-			continue // already installed by an earlier run
-		}
 		if _, err := ts.AddConstraint("deny", text, origin); err != nil {
 			return n, err
 		}
 		n++
 	}
 	return n, nil
+}
+
+// ReproduceMinSeverityFor reports the reproduce floor of the pack a task runs
+// under, or "" when no pack is installed. The server feeds this to its
+// reproducer so the floor is a property of the pack instead of a constant
+// buried in reproduce.go.
+func ReproduceMinSeverityFor(ts *db.ExplorationStore) string {
+	p, ok := activeRulePack(ts)
+	if !ok {
+		return ""
+	}
+	return p.ReproduceMinSeverity
 }
 
 // activeRulePack resolves the pack a task is running under: the first constraint

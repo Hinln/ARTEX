@@ -74,12 +74,44 @@ func NewReproducer(store *evidence.Store, pg *db.DB, proxy, caFile string) *Repr
 // RulePack.ReproduceMinSeverity: 严重/高危 must be reproduced before they may be
 // displayed as confirmed.
 func (r *Reproducer) Needed(severity string) bool {
-	switch strings.ToLower(strings.TrimSpace(severity)) {
-	case "critical", "high":
+	level := NormalizeSeverity(severity)
+	if level == "" {
 		return true
 	}
-	return false
+	floor := NormalizeSeverity(r.minLevel)
+	if floor == "" {
+		floor = "high"
+	}
+	return severityRank[level] >= severityRank[floor]
 }
+
+// SetMinLevel sets the reproduce floor. "" keeps the built-in default. The floor
+// comes from the task's rule pack, so a pack that demands verification of medium
+// findings gets it without touching this file.
+func (r *Reproducer) SetMinLevel(level string) {
+	if l := NormalizeSeverity(level); l != "" {
+		r.minLevel = l
+	}
+}
+
+// severityWords maps the labels agents actually write into report_finding onto
+// canonical levels. Matching bare English literals let a Chinese label such as
+// "严重" walk straight through the verification gate.
+var severityWords = map[string]string{
+	"critical": "critical", "严重": "critical", "严重漏洞": "critical", "极危": "critical", "紧急": "critical", "致命": "critical",
+	"high": "high", "高危": "high", "高": "high", "高风险": "high",
+	"medium": "medium", "中危": "medium", "中": "medium", "中风险": "medium", "moderate": "medium",
+	"low": "low", "低危": "low", "低": "low", "低风险": "low",
+	"info": "info", "information": "info", "信息": "info", "提示": "info", "none": "info",
+}
+
+// NormalizeSeverity maps a free-form severity label to a canonical level, or ""
+// when the label is unrecognised.
+func NormalizeSeverity(s string) string {
+	return severityWords[strings.ToLower(strings.TrimSpace(s))]
+}
+
+var severityRank = map[string]int{"info": 1, "low": 1, "medium": 2, "high": 3, "critical": 4}
 
 // ReproduceResult is the outcome of one attempt.
 type ReproduceResult struct {
