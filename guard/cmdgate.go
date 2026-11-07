@@ -19,6 +19,7 @@
 package guard
 
 import (
+	"sync/atomic"
 	"context"
 	"net/url"
 	"os"
@@ -121,14 +122,9 @@ type cmdGate struct {
 }
 
 func newCmdGate(cfg gateConfig) *cmdGate {
-	return &cmdGate{
-		cfg:      cfg,
-		windows:  map[string][]time.Time{},
-		inflight: map[string]int{},
-		streak:   map[string]int{},
-		openTill: map[string]time.Time{},
-		lastDeny: map[string]string{},
-	}
+	g := &cmdGate{cfg: cfg, windows: map[string][]time.Time{}, inflight: map[string]int{}, streak: map[string]int{}, openTill: map[string]time.Time{}, lastDeny: map[string]string{}}
+	activeGate.Store(g)
+	return g
 }
 
 // verdict is what the hook acts on.
@@ -289,3 +285,34 @@ func hostOfURL(s string) string {
 }
 
 var _ = context.Background // keep context imported for future judge wiring
+
+
+// activeGate 指向当前进程里的闸门实例，供 /api/stats 读实时计数。
+var activeGate atomic.Pointer[cmdGate]
+
+// GateStats 汇报闸门配置与当前负载：谁的预算快用完了，哪个会话被熔断。
+func GateStats() map[string]any {
+	g := activeGate.Load()
+	if g == nil {
+		return map[string]any{"enabled": false}
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	now := time.Now()
+	open := make([]string, 0, len(g.openTill))
+	for sess, until := range g.openTill {
+		if now.Before(until) {
+			open = append(open, sess+" ("+until.Sub(now).Round(time.Second).String()+")")
+		}
+	}
+	return map[string]any{
+		"enabled":              g.cfg.Enabled,
+		"rate_rpm":             g.cfg.RateRPM,
+		"concurrency":          g.cfg.Concurrency,
+		"breaker_deny_n":       g.cfg.BreakerN,
+		"breaker_cooldown_sec": int(g.cfg.BreakerCool.Seconds()),
+		"tracked_hosts":        len(g.windows),
+		"inflight_hosts":       len(g.inflight),
+		"open_sessions":        open,
+	}
+}

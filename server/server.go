@@ -21,6 +21,7 @@ import (
 
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/guard"
 	"github.com/Autumn-27/artex/intercept"
 	"github.com/Autumn-27/artex/intercept/jev"
 	"github.com/Autumn-27/artex/llmpool"
@@ -1155,7 +1156,12 @@ func (s *Server) Handler() http.Handler {
 // health requires the optional Basic Auth gate but no admin JWT, and exposes no application fingerprints.
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	writeJSON(w, 200, map[string]any{"ok": true})
+	// Unauth endpoint: only whether the gate is armed, no counters.
+	gate := map[string]any{"enabled": false}
+	if st := guard.GateStats(); st != nil {
+		gate["enabled"] = st["enabled"]
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "gate": gate})
 }
 
 // version is protected by the normal JWT middleware and optional Basic Auth gate.
@@ -1168,6 +1174,7 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 	out := map[string]any{}
 	out["engine_mode"] = "idle"              // spec enum; overridden below when a task is active
 	out["llm_configured"] = s.engine.Ready() // is an LLM provider installed at all
+	out["gate"] = guard.GateStats()          // live command gate: budgets, in-flight hosts, open breakers
 	if tr := s.m.Traffic(); tr != nil {
 		c, _ := tr.Count()
 		out["traffic"] = c

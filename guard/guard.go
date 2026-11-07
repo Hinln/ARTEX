@@ -193,7 +193,11 @@ var reBlocked = regexp.MustCompile(`(?i)\b(403|forbidden|waf|blocked|rate.?limit
 // postToolUse is the Observer failure-attribution hook (G5): it classifies tool
 // results into blocked / error / ok so the planner can change strategy instead
 // of giving up at a WAF.
-func (g *Guard) postToolUse(_ context.Context, ev hook.Event) hook.Result {
+func (g *Guard) postToolUse(ctx context.Context, ev hook.Event) hook.Result {
+	// Every call lands in the execution ledger: report_finding checks a finding's
+	// evidence against what actually ran, so a pasted "expected" output cannot pass.
+	session := strconv.FormatInt(intercept.ConvIDFromContext(ctx), 10)
+	intercept.RecordExecution(session, ev.ToolName, ledgerCommand(ev), string(ev.Result), ev.IsError)
 	if g.gate != nil {
 		if hosts := nativeNetHosts(ev.ToolName, ev.Input); len(hosts) > 0 {
 			g.gate.doneHosts(hosts)
@@ -233,6 +237,35 @@ func (g *Guard) Attributions() map[string]int {
 		out[k] = v
 	}
 	return out
+}
+
+
+// ledgerCommand pulls the command-ish part of a tool call for the execution ledger.
+func ledgerCommand(ev hook.Event) string {
+	switch ev.ToolName {
+	case "Bash", "shell_open":
+		var in struct {
+			Command string `json:"command"`
+		}
+		_ = json.Unmarshal(ev.Input, &in)
+		return in.Command
+	case "shell_send":
+		var in struct {
+			Text string `json:"text"`
+		}
+		_ = json.Unmarshal(ev.Input, &in)
+		return in.Text
+	}
+	if cmds, _ := mcpCall(ev.ToolName, ev.Input); len(cmds) > 0 {
+		return strings.Join(cmds, " ; ")
+	}
+	if hosts := nativeNetHosts(ev.ToolName, ev.Input); len(hosts) > 0 {
+		return ev.ToolName + " " + strings.Join(hosts, " ")
+	}
+	if len(ev.Input) > 0 && len(ev.Input) <= 2048 {
+		return ev.ToolName + " " + string(ev.Input)
+	}
+	return ev.ToolName
 }
 
 func (g *Guard) block(tool, reason, cmd string) hook.Result {

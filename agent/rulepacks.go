@@ -36,7 +36,11 @@ type RulePack struct {
 	Blurb  string // one line shown in the task UI
 	Scope  string // what counts as the sensitive-data bar for this pack
 	Accept []string
-	Reject []string // each entry becomes a deny constraint at install time
+	// Requires are the obligations the opposite way round: they do not forbid a
+	// class, they demand a step. Rendered into the same prompt block, so a worker
+	// cannot finish an intent without having recorded assets and evidence.
+	Requires []string
+	Reject   []string // each entry becomes a deny constraint at install time
 	Proof  string   // harmless-evidence contract for write/delete/update findings
 	Grades []SeverityLevel
 	// ReproduceMinSeverity is the lowest severity that must be re-verified by the
@@ -77,6 +81,11 @@ func eduSRCPack() RulePack {
 			"无回显 RCE：有稳定侧信道（sleep 线性、DNS/HTTP 带外、结果落地后回读）即成立，判高危并继续补链。",
 			"服务器被攻陷：本站正文被替换为赌博/色情/彩票、出现 deface、webshell 可执行（须 raw_response 可见）→ 高危~严重。图床/CDN 外链不是被黑。",
 			"后台管理员弱口令：等级取决于登录后实际能做什么，不是「弱口令=高危」。",
+		},
+		Requires: []string{
+			"每个确认的资产（域名/子域/IP/端口/URL/指纹）必须 insert_assets 落库，并在 detail 标明来源",
+			"每个上报漏洞必须带 evidence：真实命令或请求 + 真实回显；没有回显就先用 record_fact 标 inferred",
+			"写/删/改类漏洞必须按取证要求做无害哨兵对照，不能只看自身回包",
 		},
 		Reject: []string{
 			"不提交反射型 XSS / Self-XSS",
@@ -119,6 +128,11 @@ func enterprisePack() RulePack {
 			"关键业务写操作：改订单/退款/审批/权限/用户资料/绑定关系/资金状态（须有状态变化证据）。",
 			"任意用户接管、密码重置、OAuth/SSO 绑定覆盖、短信 OTP 回显或绕过。",
 			"服务器被攻陷（本站正文被替换、webshell 可执行）→ 高危~严重。",
+		},
+		Requires: []string{
+			"每个确认的资产（域名/子域/IP/端口/URL/指纹）必须 insert_assets 落库，并在 detail 标明来源",
+			"每个上报漏洞必须带 evidence：真实命令或请求 + 真实回显；没有回显就先用 record_fact 标 inferred",
+			"改订单/权限/资金类必须做无害回写对照（affectedRows≥1 且值未变）或自建哨兵对象",
 		},
 		Reject: []string{
 			"不提交仅发现 key/secret 而未证明能调用接口、伪造签名、读取受限数据或造成损失",
@@ -302,6 +316,14 @@ func rulePackPrompt(p RulePack) string {
 		b.WriteString("：")
 		b.WriteString(strings.Join(g.Criteria, "；"))
 		b.WriteByte('\n')
+	}
+	if len(p.Requires) > 0 {
+		b.WriteString("必做（不做等于本轮没干完）：\n")
+		for _, r := range p.Requires {
+			b.WriteString("- ")
+			b.WriteString(r)
+			b.WriteByte('\n')
+		}
 	}
 	if p.Proof != "" {
 		b.WriteString("取证要求：")

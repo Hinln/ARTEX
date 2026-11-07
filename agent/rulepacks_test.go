@@ -101,3 +101,20 @@ func TestGradesAreDescendingFourLevels(t *testing.T) {
 		}
 	}
 }
+
+func TestRulePacksCarryMustDoObligations(t *testing.T) {
+	for _, pack := range BuiltinRulePacks() {
+		if len(pack.Requires) == 0 {
+			t.Fatalf("%s has no Requires", pack.Key)
+		}
+		block := rulePackPrompt(pack)
+		if !strings.Contains(block, "必做") {
+			t.Fatalf("%s prompt lacks the must-do section", pack.Key)
+		}
+		for _, r := range pack.Requires {
+			if !strings.Contains(block, r) {
+				t.Fatalf("%s prompt drops requirement %q", pack.Key, r)
+			}
+		}
+	}
+}

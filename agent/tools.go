@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/intercept"
 	acperm "github.com/Autumn-27/norma/permission"
 	actool "github.com/Autumn-27/norma/tool"
 )
@@ -1291,9 +1292,21 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 		if err := json.Unmarshal(in, &a); err != nil {
 			return actool.Errorf(err.Error()), nil
 		}
+		severityNote := ""
 		if strings.TrimSpace(a.Evidence) == "" {
 			return actool.Errorf("report_finding 需要 evidence：贴出复现该漏洞的真实命令输出或原始响应；没有可复核证据的结论不入库。"), nil
 		}
+		// Evidence has to be real: it must match a tool output recorded in this
+		// session, and it must not read like a guess. This is where "模型自己骗自己"
+		// gets caught — a fabricated回显 has nothing to match against.
+		sess := strconv.FormatInt(intercept.ConvIDFromContext(ctx), 10)
+		if okEvidence, why := VerifyEvidence(sess, a.Evidence); !okEvidence {
+			return actool.Errorf("漏洞未入库：" + why), nil
+		}
+		if InfoOnlyClass(a.VulnClass) {
+			return actool.Errorf("「" + a.VulnClass + "」属于信息级发现（内网 IP、端口、版本、指纹这类），不单独收录为漏洞。请改用 record_fact 记录，并把它当探索线索；只有证明由此能进一步访问/利用时，再作为漏洞上报并贴出那一步的真实回显。"), nil
+		}
+		a.Severity, _, severityNote = CalibrateSeverity(a.VulnClass, a.Evidence, a.Severity)
 		if t.ts == nil {
 			return actool.Errorf("report_finding 需要任务上下文；平台对话请通过 add_task_hint 向对应任务交接漏洞，并在提示中携带已有的 traffic_refs，由任务 Agent 登记。已登记漏洞可用 bind_finding_traffic 补绑。"), nil
 		}
@@ -1344,6 +1357,9 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 			EvidenceStatus string `json:"evidence_status"`
 			EvidenceNote   string `json:"evidence_note,omitempty"`
 		}{RecordedFinding: recorded, EvidenceStatus: "bound"}
+		if severityNote != "" {
+			result.EvidenceNote = strings.TrimSpace(result.EvidenceNote + " " + severityNote)
+		}
 		if len(recorded.Traffic.Bindings) == 0 {
 			result.EvidenceStatus = "not_bound"
 			result.EvidenceNote = "漏洞已保存，未绑定流量。TCP/无包情形可正常继续；若已有核实的 HTTP 流量，请用可用的 bind_finding_traffic 或漏洞页面补绑，再完成证据交接。不要重复创建漏洞。"
