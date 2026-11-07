@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -358,40 +359,47 @@ func sameIDSet(a, b []int64) bool {
 	return true
 }
 
-// existingFindingTx finds a finding already recorded for the same class, title,
-// severity and asset set. Models re-report the same bug from a new intent all the
-// time; without this the report grows a duplicate per retry.
-func existingFindingTx(tx *sql.Tx, in RecordFindingInput) (id, nodeID int64, ok bool, err error) {
-	assets := in.AssetIDs
-	if assets == nil {
-		assets = []int64{}
+// findingDedupeKey is the identity of a finding inside one exploration:
+// class, title, severity and the affected asset set. Two reports sharing it are
+// the same bug, whichever intent produced them.
+//
+// It is hashed so the "already recorded?" check is a single unique-index probe.
+// Matching lower(vulnclass)/btrim(name) instead degrades into a table scan as
+// soon as a task accumulates a few hundred findings, and every re-report pays it.
+func findingDedupeKey(expID int64, vulnclass, name, severity string, assets []int64) string {
+	norm := func(v string) string {
+		return strings.ToLower(strings.Join(strings.Fields(v), " "))
 	}
-	rows, err := tx.Query(`SELECT f.id, f.node_id, f.asset_ids
-		FROM findings f JOIN exploration_nodes n ON n.id = f.node_id
-		WHERE n.exploration_id = $1
-		  AND lower(f.vulnclass) = lower($2)
-		  AND lower(btrim(f.name)) = lower(btrim($3))
-		  AND f.severity = $4
-		  AND COALESCE(f.status, '') <> 'duplicate'
-		ORDER BY f.created_at DESC LIMIT 5`,
-		in.ExplorationID, in.VulnClass, in.Name, in.Severity)
+	ids := make([]int64, 0, len(assets))
+	seen := make(map[int64]struct{}, len(assets))
+	for _, v := range assets {
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		ids = append(ids, v)
+	}
+	sort.Slice(ids, func(a, b int) bool { return ids[a] < ids[b] })
+
+	var buf strings.Builder
+	fmt.Fprintf(&buf, "exp=%d\nclass=%s\nname=%s\nsev=%s\nassets=", expID, norm(vulnclass), norm(name), norm(severity))
+	for _, v := range ids {
+		fmt.Fprintf(&buf, "%d,", v)
+	}
+	sum := sha256.Sum256([]byte(buf.String()))
+	return hex.EncodeToString(sum[:])
+}
+
+// existingFindingTx is one indexed lookup on dedupe_key (uq_findings_dedupe).
+func existingFindingTx(tx *sql.Tx, key string) (id, nodeID int64, ok bool, err error) {
+	err = tx.QueryRow(`SELECT id, node_id FROM findings WHERE dedupe_key = $1`, key).Scan(&id, &nodeID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, 0, false, nil
+	}
 	if err != nil {
 		return 0, 0, false, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var fid, nid int64
-		var raw string
-		if err := rows.Scan(&fid, &nid, &raw); err != nil {
-			return 0, 0, false, err
-		}
-		var have []int64
-		_ = json.Unmarshal([]byte(raw), &have)
-		if sameIDSet(have, assets) {
-			return fid, nid, true, nil
-		}
-	}
-	return 0, 0, false, rows.Err()
+	return id, nodeID, true, nil
 }
 
 func RecordFindingTx(ctx context.Context, tx *sql.Tx, in RecordFindingInput, prepared []PreparedTrafficEvidence) (*RecordedFinding, error) {
@@ -418,7 +426,8 @@ func RecordFindingTx(ctx context.Context, tx *sql.Tx, in RecordFindingInput, pre
 	}
 	// 同一个漏洞被重复上报时不要再造一条：既不新建图节点，也不重复推送。
 	// 证据比旧的长就替换（后一次往往更完整），返回值让调用方复用已有 id。
-	if dupID, dupNode, dup, err := existingFindingTx(tx, in); err != nil {
+	dedupeKey := findingDedupeKey(in.ExplorationID, in.VulnClass, in.Name, in.Severity, in.AssetIDs)
+	if dupID, dupNode, dup, err := existingFindingTx(tx, dedupeKey); err != nil {
 		return nil, err
 	} else if dup {
 		if _, err := tx.Exec(`UPDATE findings
@@ -454,8 +463,24 @@ VALUES($1,'finding',$2,9,'confirmed',$3) RETURNING id`, in.ExplorationID, string
 		assets = []int64{}
 	}
 	raw, _ := json.Marshal(assets)
-	if err := tx.QueryRow(`INSERT INTO findings(task_id,node_id,vulnclass,name,severity,summary,evidence,worker,asset_ids)
-VALUES(NULLIF($1,0),$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`, in.TaskID, out.NodeID, in.VulnClass, in.Name, in.Severity, in.Summary, in.Evidence, in.Worker, string(raw)).Scan(&out.FindingID); err != nil {
+	err := tx.QueryRow(`INSERT INTO findings(task_id,node_id,vulnclass,name,severity,summary,evidence,worker,asset_ids,dedupe_key)
+VALUES(NULLIF($1,0),$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
+		in.TaskID, out.NodeID, in.VulnClass, in.Name, in.Severity, in.Summary, in.Evidence, in.Worker, string(raw), dedupeKey).Scan(&out.FindingID)
+	if err != nil {
+		// 并发窗口：另一个 worker 在我们算完 key 之后插了同一条。
+		// 让它那条胜出，删掉自己刚建的空节点，复用它的 id。
+		if dupID, dupNode, dup, qerr := existingFindingTx(tx, dedupeKey); qerr == nil && dup {
+			_, _ = tx.Exec(`DELETE FROM exploration_nodes n WHERE n.id = $1 AND NOT EXISTS (SELECT 1 FROM findings f WHERE f.node_id = $1)`, out.NodeID)
+			out.FindingID, out.NodeID = dupID, dupNode
+			if _, e := tx.Exec(`UPDATE findings SET evidence = CASE WHEN length($2) > length(evidence) THEN $2 ELSE evidence END WHERE id = $1`, dupID, in.Evidence); e != nil {
+				return nil, e
+			}
+			if e := AddFindingTrafficTx(tx, dupID, prepared); e != nil {
+				return nil, e
+			}
+			out.Traffic, _ = FindingTrafficTx(tx, dupID)
+			return out, nil
+		}
 		return nil, err
 	}
 	// 在**同一事务**里登记一条推送事件：提交即保证「漏洞落库」与「推送任务存在」
@@ -474,7 +499,6 @@ VALUES(NULLIF($1,0),$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`, in.TaskID, out.NodeI
 	if err := AddFindingTrafficTx(tx, out.FindingID, prepared); err != nil {
 		return nil, err
 	}
-	var err error
 	out.Traffic, err = FindingTrafficTx(tx, out.FindingID)
 	return out, err
 }
