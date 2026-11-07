@@ -339,6 +339,61 @@ type RecordedFinding struct {
 
 // ctx 由调用方传入本次事务所用的上下文（而非在内部取 context.Background）：
 // 事务内新加的推送事件写入同样应受调用方的取消与超时约束。
+// sameIDSet reports whether two id lists contain the same ids, ignoring order
+// and duplicates. A re-report on the same assets is the same finding; one on a
+// different asset is not.
+func sameIDSet(a, b []int64) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	seen := make(map[int64]struct{}, len(a))
+	for _, v := range a {
+		seen[v] = struct{}{}
+	}
+	for _, v := range b {
+		if _, ok := seen[v]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// existingFindingTx finds a finding already recorded for the same class, title,
+// severity and asset set. Models re-report the same bug from a new intent all the
+// time; without this the report grows a duplicate per retry.
+func existingFindingTx(tx *sql.Tx, in RecordFindingInput) (id, nodeID int64, ok bool, err error) {
+	assets := in.AssetIDs
+	if assets == nil {
+		assets = []int64{}
+	}
+	rows, err := tx.Query(`SELECT f.id, f.node_id, f.asset_ids
+		FROM findings f JOIN exploration_nodes n ON n.id = f.node_id
+		WHERE n.exploration_id = $1
+		  AND lower(f.vulnclass) = lower($2)
+		  AND lower(btrim(f.name)) = lower(btrim($3))
+		  AND f.severity = $4
+		  AND COALESCE(f.status, '') <> 'duplicate'
+		ORDER BY f.created_at DESC LIMIT 5`,
+		in.ExplorationID, in.VulnClass, in.Name, in.Severity)
+	if err != nil {
+		return 0, 0, false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var fid, nid int64
+		var raw string
+		if err := rows.Scan(&fid, &nid, &raw); err != nil {
+			return 0, 0, false, err
+		}
+		var have []int64
+		_ = json.Unmarshal([]byte(raw), &have)
+		if sameIDSet(have, assets) {
+			return fid, nid, true, nil
+		}
+	}
+	return 0, 0, false, rows.Err()
+}
+
 func RecordFindingTx(ctx context.Context, tx *sql.Tx, in RecordFindingInput, prepared []PreparedTrafficEvidence) (*RecordedFinding, error) {
 	if err := LockTaskEvidenceTx(tx, in.TaskID); err != nil {
 		return nil, err
@@ -360,6 +415,23 @@ func RecordFindingTx(ctx context.Context, tx *sql.Tx, in RecordFindingInput, pre
 		if !ok {
 			return nil, errors.New("intent_id 必须是本任务的意图（关联任务意图只读）")
 		}
+	}
+	// 同一个漏洞被重复上报时不要再造一条：既不新建图节点，也不重复推送。
+	// 证据比旧的长就替换（后一次往往更完整），返回值让调用方复用已有 id。
+	if dupID, dupNode, dup, err := existingFindingTx(tx, in); err != nil {
+		return nil, err
+	} else if dup {
+		if _, err := tx.Exec(`UPDATE findings
+			SET evidence = CASE WHEN length($2) > length(evidence) THEN $2 ELSE evidence END
+			WHERE id = $1`, dupID, in.Evidence); err != nil {
+			return nil, err
+		}
+		if err := AddFindingTrafficTx(tx, dupID, prepared); err != nil {
+			return nil, err
+		}
+		out := &RecordedFinding{FindingID: dupID, NodeID: dupNode}
+		out.Traffic, _ = FindingTrafficTx(tx, dupID)
+		return out, nil
 	}
 	payload, _ := json.Marshal(map[string]any{"vulnclass": in.VulnClass, "name": in.Name, "severity": in.Severity, "summary": in.Summary, "evidence": map[string]any{"by": in.Worker, "poc": in.Evidence}})
 	out := &RecordedFinding{}
