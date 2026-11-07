@@ -667,6 +667,9 @@ func (t *ToolSet) WorkerTools() []actool.CoreTool {
 		t.httpRequest(),
 		t.dnsLookup(), t.tlsInfo(), t.portProbe(),
 		t.parseResponse(), t.extractEndpoints(), t.fingerprintTool(),
+		t.certSubdomains(), t.waybackURLs(), t.rdapLookup(), t.reverseIP(),
+		t.cdnDetect(), t.faviconHash(), t.fofaSearch(), t.robotsHarvest(),
+		t.subdomainVerify(),
 		// node_detail：worker 拿到 intent_id/节点 id 后可查该节点完整详情（配合上面的回看）。
 		t.nodeDetail(),
 		// 以下工具仍【不给】worker，只留给 planner/main（读上下文、跨 work 复盘是规划职责，

@@ -2110,6 +2110,9 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		t.httpRequest(), // single-point validation without a shell
 		t.dnsLookup(), t.tlsInfo(), t.portProbe(),
 		t.parseResponse(), t.extractEndpoints(), t.fingerprintTool(),
+		t.certSubdomains(), t.waybackURLs(), t.rdapLookup(), t.reverseIP(),
+		t.cdnDetect(), t.faviconHash(), t.fofaSearch(), t.robotsHarvest(),
+		t.subdomainVerify(),
 		t.graphOverview(), t.listFindings(), t.listFacts(), t.nodeDetail(),
 		// cold-digest §6.1: restore folded cold nodes (digest body → members → detail).
 		t.expandDigest(),

@@ -17,6 +17,8 @@ var nativeNetTools = map[string]bool{
 	"tls_info":     true,
 	"port_probe":   true,
 	"fingerprint":  true,
+	"favicon_hash": true,
+	"robots_harvest": true,
 }
 
 // nativeNetHosts pulls target hosts out of a native tool's JSON arguments.
