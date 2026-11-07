@@ -88,6 +88,17 @@ func (g *Guard) preToolUse(ctx context.Context, ev hook.Event) hook.Result {
 		g.gate.acquire(cmd)
 		g.gate.allow(session)
 	}
+	// Native recon tools reach the network without a shell command, so the host
+	// budget has to be applied to them explicitly.
+	if hosts := nativeNetHosts(ev.ToolName, ev.Input); len(hosts) > 0 {
+		session := strconv.FormatInt(intercept.ConvIDFromContext(ctx), 10)
+		if v := g.gate.checkHosts(session, hosts); v.Deny {
+			g.record(ev.ToolName, "block", v.Rule+": "+v.Reason, "")
+			return g.block(ev.ToolName, systemBlockMessage("[命令闸门 "+v.Rule+"] "+strings.TrimSuffix(v.Reason, "。")), "")
+		}
+		g.gate.acquireHosts(hosts)
+		g.gate.allow(session)
+	}
 	g.record(ev.ToolName, "allow", "", cmd)
 	return g.applyIntercept(ctx, ev)
 }
@@ -160,6 +171,12 @@ var reBlocked = regexp.MustCompile(`(?i)\b(403|forbidden|waf|blocked|rate.?limit
 // results into blocked / error / ok so the planner can change strategy instead
 // of giving up at a WAF.
 func (g *Guard) postToolUse(_ context.Context, ev hook.Event) hook.Result {
+	if g.gate != nil {
+		if hosts := nativeNetHosts(ev.ToolName, ev.Input); len(hosts) > 0 {
+			g.gate.doneHosts(hosts)
+			return hook.Result{}
+		}
+	}
 	if ev.ToolName != "Bash" {
 		return hook.Result{}
 	}

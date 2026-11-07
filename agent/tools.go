@@ -2108,6 +2108,8 @@ func (t *ToolSet) listWorkerTraces() actool.CoreTool {
 func (t *ToolSet) PlannerTools() []actool.CoreTool {
 	return []actool.CoreTool{
 		t.httpRequest(), // single-point validation without a shell
+		t.dnsLookup(), t.tlsInfo(), t.portProbe(),
+		t.parseResponse(), t.extractEndpoints(), t.fingerprintTool(),
 		t.graphOverview(), t.listFindings(), t.listFacts(), t.nodeDetail(),
 		// cold-digest §6.1: restore folded cold nodes (digest body → members → detail).
 		t.expandDigest(),

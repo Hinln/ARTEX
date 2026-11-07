@@ -17,7 +17,7 @@ ARG TARGETARCH
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates ripgrep curl wget vim git jq unzip \
       tzdata \
-      dnsutils iputils-ping netcat-openbsd inetutils-telnet whois nmap \
+      dnsutils iputils-ping netcat-openbsd inetutils-telnet whois nmap openssl \
     && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*

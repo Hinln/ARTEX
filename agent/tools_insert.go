@@ -665,6 +665,8 @@ func (t *ToolSet) WorkerTools() []actool.CoreTool {
 		// http_request: native HTTP client. One request, read the response,
 		// and it is captured by the recording proxy just like a curl from Bash.
 		t.httpRequest(),
+		t.dnsLookup(), t.tlsInfo(), t.portProbe(),
+		t.parseResponse(), t.extractEndpoints(), t.fingerprintTool(),
 		// node_detail：worker 拿到 intent_id/节点 id 后可查该节点完整详情（配合上面的回看）。
 		t.nodeDetail(),
 		// 以下工具仍【不给】worker，只留给 planner/main（读上下文、跨 work 复盘是规划职责，
