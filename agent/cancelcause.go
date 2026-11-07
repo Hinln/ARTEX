@@ -90,3 +90,9 @@ func AbortReason(ctx context.Context) (code, short, text string, ok bool) {
 		return "other", firstLine(c.Error(), 80), c.Error(), true
 	}
 }
+
+// AbortPausedByBudget stops a task that spent its token budget. The task is
+// paused rather than finished: raising ARTEX_TASK_TOKEN_BUDGET and resuming
+// continues the same graph.
+var AbortPausedByBudget = cause("paused_by_budget", "任务 token 预算已用尽",
+	"预算用尽，任务已暂停；调高 ARTEX_TASK_TOKEN_BUDGET 后点继续即可恢复")

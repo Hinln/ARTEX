@@ -12,6 +12,7 @@ import (
 
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/intercept"
+	"github.com/Autumn-27/artex/traffic"
 	"github.com/Autumn-27/norma/agentcore"
 	"github.com/Autumn-27/norma/harness"
 	"github.com/Autumn-27/norma/llm"
@@ -49,6 +50,7 @@ type Worker struct {
 	proxyAddr       string
 	proxyAddrFn     func() string
 	proxyCACert     string            // recording proxy's CA cert path (for WebFetch HTTPS verify)
+	trafficRec      *traffic.Traffic  // recording index: tools can name the exchange they just made
 	webSearch       WebSearchOpts     // web_search tool backend selection (off by default)
 	tx              *transcript.Store // raw LLM conversation persistence (nil = off)
 	window          int               // context window in tokens (for compaction)
@@ -178,6 +180,9 @@ func (w *Worker) compactionWindow() int {
 // traffic through, plus the CA cert path WebFetch trusts to verify HTTPS through
 // that MITM proxy. Empty addr disables the hint.
 func (w *Worker) SetProxy(addr, caCert string) { w.proxyAddr, w.proxyCACert = addr, caCert }
+
+// SetTrafficRec hands the worker's tools the recording index.
+func (w *Worker) SetTrafficRec(tr *traffic.Traffic) { w.trafficRec = tr }
 
 func (w *Worker) SetProxyProvider(fn func() string) { w.proxyAddrFn = fn }
 
@@ -374,6 +379,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 			addr = w.proxyAddrFn()
 		}
 		tsx.SetEgress(addr, w.proxyCACert)
+		tsx.SetTrafficRec(w.trafficRec)
 	}
 	base := append(tsx.WorkerTools(), w.extraTools...)
 	// worker 刻意不给 MultiEdit/Glob/Grep：文件精改用 Edit、检索走 Bash(grep/find)，

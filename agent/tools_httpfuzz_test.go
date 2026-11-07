@@ -113,7 +113,7 @@ func TestFuzzAgainstLocalServer(t *testing.T) {
 	base, _ := url.Parse(srv.URL + "/item?id=1")
 	client := &http.Client{}
 
-	baseline, err := fuzzOnce(context.Background(), client, "GET", base, "query", "id", "", "1")
+	baseline, err := fuzzOnce(context.Background(), client, "GET", base, "query", "id", "", "1", "")
 	if err != nil {
 		t.Fatalf("baseline: %v", err)
 	}
@@ -121,7 +121,7 @@ func TestFuzzAgainstLocalServer(t *testing.T) {
 		t.Fatalf("baseline polluted: %+v", baseline)
 	}
 
-	quote, err := fuzzOnce(context.Background(), client, "GET", base, "query", "id", "", "' OR '1'='1")
+	quote, err := fuzzOnce(context.Background(), client, "GET", base, "query", "id", "", "' OR '1'='1", "")
 	if err != nil {
 		t.Fatalf("payload: %v", err)
 	}
@@ -133,9 +133,25 @@ func TestFuzzAgainstLocalServer(t *testing.T) {
 		t.Fatalf("expected status + error flags, got %v", flags)
 	}
 
-	clean, _ := fuzzOnce(context.Background(), client, "GET", base, "query", "id", "", "2")
+	clean, _ := fuzzOnce(context.Background(), client, "GET", base, "query", "id", "", "2", "")
 	clean.Payload = "2"
 	if flags := fuzzFlags(baseline, clean); len(flags) != 0 {
 		t.Fatalf("clean value flagged: %v", flags)
+	}
+}
+
+func TestFuzzStampsCaseHeaderForLookup(t *testing.T) {
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("X-Artex-Case")
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+	base, _ := url.Parse(srv.URL + "/x?p=1")
+	if _, err := fuzzOnce(context.Background(), &http.Client{}, "GET", base, "query", "p", "", "v", "fz123-7"); err != nil {
+		t.Fatalf("fuzzOnce: %v", err)
+	}
+	if got != "fz123-7" {
+		t.Fatalf("case header not stamped, got %q", got)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -877,6 +878,45 @@ func resetPlannerTimer(timer *time.Timer, d time.Duration) {
 	timer.Reset(d)
 }
 
+// tokenBudget is ARTEX_TASK_TOKEN_BUDGET. Absent, empty, zero or unparsable all
+// mean "no cap", which is the default: a task must never die halfway because a
+// number someone guessed turned out to be small.
+func tokenBudget() int64 {
+	v := strings.TrimSpace(os.Getenv("ARTEX_TASK_TOKEN_BUDGET"))
+	if v == "" {
+		return 0
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return n
+}
+
+// overBudget pauses a task whose metered spend reached the budget. It pauses
+// instead of finishing: the graph stays intact and raising the budget plus
+// resuming continues where it stopped. Checked once per planning round, which is
+// the cheapest possible cadence — one aggregate query against an indexed table.
+func (e *Engine) overBudget(t *Task) bool {
+	limit := tokenBudget()
+	if limit <= 0 || t == nil {
+		return false
+	}
+	pg := e.m.PG()
+	if pg == nil {
+		return false
+	}
+	used, err := pg.TokenTotal(t.ID)
+	if err != nil || used < limit {
+		return false
+	}
+	log.Printf("[budget] task %s 已用 %d tokens，达到预算 %d，暂停任务", t.ID, used, limit)
+	e.emitActivity(t, db.Activity{Worker: "system", Kind: "text",
+		Summary: fmt.Sprintf("token 预算已用尽：%d / %d。任务已暂停，调高 ARTEX_TASK_TOKEN_BUDGET 后点继续即可恢复，已有图谱与资产都保留。", used, limit)})
+	e.Pause(t.ID, agent.AbortPausedByBudget)
+	return true
+}
+
 func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 	interval := plannerHeartbeatInterval(t)
 	// 心跳定时器在 loop 入口臂 = 从任务 start 计时:即使是跳过首轮 planner 的 seed 任务
@@ -916,6 +956,9 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		// 任务级超时收尾中:丢弃普通唤醒——worker 收尾写回、Resume 的 Notify 都不再
 		// 触发常规规划轮;终局那一轮由协调器(settleTask)直接驱动,不走这里。
 		if e.isSettling(t.ID) {
+			return
+		}
+		if e.overBudget(t) {
 			return
 		}
 		// goalless（人工直投）分支：任务已无 open 目标时 planner 不跑——跑了会重判

@@ -9,6 +9,7 @@ import (
 
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/intercept"
+	"github.com/Autumn-27/artex/traffic"
 	acperm "github.com/Autumn-27/norma/permission"
 	actool "github.com/Autumn-27/norma/tool"
 )
@@ -68,6 +69,11 @@ type ToolSet struct {
 	// recording proxy Bash uses, so its traffic reaches the evidence store.
 	egressProxy string
 	egressCA    string
+	// trafficRec is the recording proxy's index. Native tools stamp a per-request
+	// nonce and use it to recover the exchange id, so a fuzz hit can be bound to a
+	// finding as proof traffic instead of being retold in prose. nil = recording
+	// off, and tools then say so instead of inventing ids.
+	trafficRec *traffic.Traffic
 	// ownerNode is the exploration node that writes attach to: assets this run
 	// touches get anchored to it as lineage/provenance (NOT visibility — the asset
 	// graph is global and shared). Worker = its claimed intent; planner = begin root.
@@ -169,6 +175,10 @@ func (w WriteCounts) String() string {
 // tell "explored but persisted nothing" apart from a completed intent, and log an
 // honest breakdown instead of calling assets/findings "facts").
 func (t *ToolSet) Writes() WriteCounts { return t.writes }
+
+// SetTrafficRec binds the recording proxy so tools can look up the exchange id of
+// a request they just sent. nil is fine (recording disabled).
+func (t *ToolSet) SetTrafficRec(tr *traffic.Traffic) { t.trafficRec = tr }
 
 func NewToolSet(ts *db.ExplorationStore, worker string) *ToolSet {
 	return &ToolSet{ts: ts, worker: worker}

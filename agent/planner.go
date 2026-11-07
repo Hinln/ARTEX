@@ -9,6 +9,7 @@ import (
 
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/intercept"
+	"github.com/Autumn-27/artex/traffic"
 	"github.com/Autumn-27/norma/agentcore"
 	"github.com/Autumn-27/norma/llm"
 	"github.com/Autumn-27/norma/permission"
@@ -33,6 +34,7 @@ type Planner struct {
 	proxyAddr         string                                 // recording proxy for WebFetch (empty = direct)
 	proxyAddrFn       func() string
 	proxyCACert       string        // recording proxy's CA cert path (HTTPS verify)
+	trafficRec        *traffic.Traffic // recording index: lets tools name the exchange they just made
 	webSearch         WebSearchOpts // web_search tool backend selection (off by default)
 	workDir           string        // shared work dir (surfaced in prompt as artifact-output target)
 	injectConstraints func() bool   // resolver: inject task operation constraints into system prompt? (nil = yes)
@@ -92,6 +94,9 @@ func (p *Planner) compactionWindow() int {
 // SetProxy points the planner's WebFetch at the recording proxy plus the CA cert
 // it trusts to verify HTTPS through it (empty addr = direct).
 func (p *Planner) SetProxy(addr, caCert string)      { p.proxyAddr, p.proxyCACert = addr, caCert }
+
+// SetTrafficRec hands the planner's tools the recording index.
+func (p *Planner) SetTrafficRec(tr *traffic.Traffic) { p.trafficRec = tr }
 func (p *Planner) SetProxyProvider(fn func() string) { p.proxyAddrFn = fn }
 
 // SetWebSearch selects the web_search backend for the planner (off by default).
@@ -368,6 +373,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	tsx.SetTaskID(taskID)
 	tsx.SetCoverageEnabled(as == nil || as.CoverageEnabled(taskID))
 	tsx.SetEgress(p.proxyAddr, p.proxyCACert)
+	tsx.SetTrafficRec(p.trafficRec)
 	tsx.killWork = p.killWork   // enable kill_work tool (nil = unavailable)
 	tsx.steerWork = p.steerWork // enable steer_work tool (nil = unavailable)
 	if origin, _ := ts.OriginFactID(); origin > 0 {

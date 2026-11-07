@@ -62,6 +62,12 @@ var (
 )
 
 type fuzzCase struct {
+	// CaseID is the per-request nonce written as X-Artex-Case. The recording proxy
+	// stores request headers verbatim, so this is how a hit finds its own exchange
+	// id: fifty payloads hit one URL inside a second, and URL+time cannot tell them
+	// apart. TrafficID is that exchange id, empty when recording is off.
+	CaseID    string
+	TrafficID string
 	Payload  string
 	Status   int
 	Length   int
@@ -139,7 +145,8 @@ func (t *ToolSet) httpFuzz() actool.CoreTool {
 			}
 
 			// 基线：原值不换，先拿到干净响应做对照。
-			baseline, err := fuzzOnce(ctx, client, method, base, loc, param, a.Header, fuzzBaselineValue(base, param))
+			since := time.Now().Unix()
+			baseline, err := fuzzOnce(ctx, client, method, base, loc, param, a.Header, fuzzBaselineValue(base, param), "")
 			if err != nil {
 				return actool.Errorf(fmt.Sprintf("基线请求失败：%v", err)), nil
 			}
@@ -153,7 +160,8 @@ func (t *ToolSet) httpFuzz() actool.CoreTool {
 					defer wg.Done()
 					sem <- struct{}{}
 					defer func() { <-sem }()
-					c, err := fuzzOnce(ctx, client, method, base, loc, param, a.Header, p)
+					c, err := fuzzOnce(ctx, client, method, base, loc, param, a.Header, p,
+						fmt.Sprintf("fz%d-%d", since, i))
 					if err != nil {
 						results[i] = fuzzCase{Payload: p, Error: err.Error()}
 						return
@@ -163,6 +171,19 @@ func (t *ToolSet) httpFuzz() actool.CoreTool {
 				}(i, p)
 			}
 			wg.Wait()
+
+			// Attach the recorded exchange id to every hit, so the finding can bind
+			// it as proof traffic instead of describing it in prose. Recording off →
+			// the id stays empty and the footer says why.
+			for i := range results {
+				c := &results[i]
+				if c.Error != "" || len(c.CaseID) == 0 || t.trafficRec == nil {
+					continue
+				}
+				if id, ok := t.trafficRec.FindExchangeByRequestHeader(ctx, "X-Artex-Case", c.CaseID, since); ok {
+					c.TrafficID = id
+				}
+			}
 
 			var b strings.Builder
 			fmt.Fprintf(&b, "目标: %s\n参数: %s (%s), 基线 %d %dB %dms, 载荷 %d 个, 并发 %d\n\n",
@@ -186,8 +207,10 @@ func (t *ToolSet) httpFuzz() actool.CoreTool {
 			fmt.Fprintf(&b, "\n差异命中: %d / %d\n", anomalies, len(payloads))
 			if anomalies == 0 {
 				b.WriteString("无可复现差异：这批载荷没有打出声/色/时差。换参数位点，或按已知技术栈挑针对性载荷再来。\n")
+			} else if t.trafficRec == nil {
+				b.WriteString("下一步：录制代理未启用，命中的请求没有存档。用 http_request 手工重发一次该载荷取证，再 report_finding。\n")
 			} else {
-				b.WriteString("下一步：对命中的载荷复跑 2 次确认可复现，再把原始请求/响应写入 http_request 取证，然后 report_finding 带 evidence。\n")
+				b.WriteString("下一步：命中的请求已录制，report_finding 时把 traffic_id 填进 traffic_refs（role=proof），复现器会原样重放它。\n")
 			}
 			return actool.Text(b.String()), nil
 		})
@@ -200,11 +223,14 @@ func fuzzBaselineValue(base *url.URL, param string) string {
 	return "1"
 }
 
-func fuzzOnce(ctx context.Context, client *http.Client, method string, base *url.URL, loc, param, header, value string) (fuzzCase, error) {
+func fuzzOnce(ctx context.Context, client *http.Client, method string, base *url.URL, loc, param, header, value, caseID string) (fuzzCase, error) {
 	u := *base
 	req, err := newFuzzRequest(method, &u, loc, param, header, value)
 	if err != nil {
 		return fuzzCase{}, err
+	}
+	if caseID != "" {
+		req.Header.Set("X-Artex-Case", caseID)
 	}
 	start := time.Now()
 	resp, err := client.Do(req.WithContext(ctx))
@@ -214,7 +240,7 @@ func fuzzOnce(ctx context.Context, client *http.Client, method string, base *url
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, fuzzMaxBodyBytes))
 	text := string(raw)
-	c := fuzzCase{Status: resp.StatusCode, Length: len(raw), Millis: time.Since(start).Milliseconds()}
+	c := fuzzCase{CaseID: caseID, Status: resp.StatusCode, Length: len(raw), Millis: time.Since(start).Milliseconds()}
 	if loc != "header" {
 		c.Reflect = strings.Contains(text, value) && len(value) > 2
 	}

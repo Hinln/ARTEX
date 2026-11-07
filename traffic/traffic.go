@@ -2220,3 +2220,25 @@ func clip(s string, max int) string {
 	}
 	return s[:max] + fmt.Sprintf("\n... [截断，共 %d 字节；完整在流量文件树] ...", len(s))
 }
+
+// FindExchangeByRequestHeader returns the id of the newest captured exchange
+// whose recorded request carries "name: value", captured at or after sinceUnix.
+//
+// Why a header and not URL+time: a parameter fuzzer sends fifty requests to one
+// URL within a second, so "latest exchange for this URL" cannot identify which
+// payload produced which response. Each request stamps a per-case nonce, and
+// the recording proxy writes that header into req_head verbatim.
+func (t *Traffic) FindExchangeByRequestHeader(ctx context.Context, name, value string, sinceUnix int64) (string, bool) {
+	if t == nil || name == "" || value == "" {
+		return "", false
+	}
+	var id string
+	err := t.db.QueryRowContext(ctx,
+		`SELECT b.id FROM exchange_bodies b JOIN exchanges e ON e.id = b.id
+WHERE e.ts >= ? AND b.req_head LIKE ? ORDER BY e.ts DESC LIMIT 1`,
+		sinceUnix, "%"+name+": "+value+"%").Scan(&id)
+	if err != nil {
+		return "", false
+	}
+	return id, true
+}

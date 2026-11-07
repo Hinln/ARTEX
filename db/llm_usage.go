@@ -332,3 +332,16 @@ func ParseExpID(s string) int64 {
 	}
 	return n
 }
+
+// TokenTotal returns one task's metered tokens (input + output, cache included)
+// straight from the always-on ledger. The engine calls it once per planning
+// round to enforce ARTEX_TASK_TOKEN_BUDGET; it is a single indexed aggregate, so
+// a round with a 200k-token history costs nothing measurable to check.
+func (d *DB) TokenTotal(taskID string) (int64, error) {
+	var total int64
+	err := d.QueryRow(`
+SELECT COALESCE(SUM(input_tokens + output_tokens), 0)
+FROM llm_usage
+WHERE COALESCE(task_id,'') = $1`, taskID).Scan(&total)
+	return total, err
+}
