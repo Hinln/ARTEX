@@ -19,6 +19,9 @@ var nativeNetTools = map[string]bool{
 	"fingerprint":  true,
 	"favicon_hash": true,
 	"robots_harvest": true,
+	// icp_lookup only touches the engagement host in footer mode; the other
+	// directions read a third-party index and are deliberately unbudgeted.
+	"icp_lookup": true,
 }
 
 // nativeNetHosts pulls target hosts out of a native tool's JSON arguments.
@@ -30,8 +33,16 @@ func nativeNetHosts(tool string, raw json.RawMessage) []string {
 		Host   string `json:"host"`
 		URL    string `json:"url"`
 		Target string `json:"target"`
+		Query  string `json:"query"`
+		Mode   string `json:"mode"`
 	}
 	_ = json.Unmarshal(raw, &in)
+	if tool == "icp_lookup" {
+		if strings.ToLower(strings.TrimSpace(in.Mode)) != "footer" {
+			return nil
+		}
+		return targetHosts(in.Query)
+	}
 	blob := strings.Join([]string{in.Host, in.URL, in.Target}, " ")
 	return targetHosts(blob)
 }
