@@ -14,6 +14,7 @@ import {
   MessageSquare,
   Network,
   Plug,
+  Radar,
   Radio,
   Repeat,
   ScrollText,
@@ -87,6 +88,7 @@ export const sidebarItems: NavGroup[] = [
     label: "系统",
     items: [
       { id: "llm", title: "LLM", url: "/system/llm", icon: Brain },
+{ id: "recon", title: "信息搜集", url: "/system/recon", icon: Radar },
       { id: "agents", title: "Agent", url: "/system/agents", icon: Bot },
       { id: "mcp", title: "MCP", url: "/system/mcp", icon: Plug },
       { id: "skills", title: "Skill", url: "/system/skills", icon: Sparkles },
