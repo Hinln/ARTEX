@@ -40,9 +40,15 @@ type cgEdge struct {
 type coldParams struct {
 	R int // debounce: a node must be continuously inactive ≥R planner rounds (§7 R=6)
 	K int // min block size to fold; K=2 skips only degenerate singletons (§7 K=2)
+	// MaxMembers splits an oversized connected component into consecutive
+	// id-ordered chunks. Without a cap a single "everything is old and connected"
+	// component routinely reached thousands of members, which blew past the
+	// model's context window (1M+ input tokens per call) and timed out or 502'd
+	// on nearly every attempt. 0 = unbounded (pre-fix behaviour).
+	MaxMembers int
 }
 
-func defaultColdParams() coldParams { return coldParams{R: 6, K: 2} }
+func defaultColdParams() coldParams { return coldParams{R: 6, K: 2, MaxMembers: 64} }
 
 // coldGraph is an in-memory adjacency view over real exploration edges. The
 // derived view layer (kind=digest nodes, rel=covers edges) is filtered out at
@@ -241,6 +247,10 @@ func (g *coldGraph) group(set map[int64]bool, p coldParams) []block {
 		}
 	}
 	// Emit surviving components as blocks, each with its external-parent anchors.
+	// A component larger than MaxMembers is split into consecutive id-ordered
+	// chunks (see coldParams.MaxMembers): one enormous block would carry thousands
+	// of summaries into a single summarization call, which is both over the
+	// model's window and impossible to retry cheaply.
 	comps = uf.components()
 	var blocks []block
 	for _, ids := range comps {
@@ -248,33 +258,69 @@ func (g *coldGraph) group(set map[int64]bool, p coldParams) []block {
 			continue
 		}
 		sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
-		memberSet := make(map[int64]bool, len(ids))
-		for _, m := range ids {
-			memberSet[m] = true
+		for _, chunk := range chunkIDs(ids, p.MaxMembers) {
+			blocks = append(blocks, g.blockFor(chunk))
 		}
-		anchorSet := map[int64]bool{}
-		for _, m := range ids {
-			for _, par := range g.parents[m] {
-				if memberSet[par] {
-					continue
-				}
-				pn, ok := g.nodes[par]
-				if !ok || pn.Kind == db.KindDigest {
-					continue
-				}
-				anchorSet[par] = true
-			}
-		}
-		anchors := make([]int64, 0, len(anchorSet))
-		for a := range anchorSet {
-			anchors = append(anchors, a)
-		}
-		sort.Slice(anchors, func(i, j int) bool { return anchors[i] < anchors[j] })
-		blocks = append(blocks, block{Members: ids, Anchors: anchors})
 	}
 	// Deterministic order: by smallest member id.
 	sort.Slice(blocks, func(i, j int) bool { return blocks[i].Members[0] < blocks[j].Members[0] })
 	return blocks
+}
+
+// chunkIDs splits ids into consecutive slices of at most max elements. max<=0
+// keeps one slice.
+//
+// Chunks are balanced rather than maximally full, because a trailing chunk of one
+// member is below K and can never be folded — it would sit in the graph forever
+// and be re-attempted every round. When K forbids an even split (5 members, max 2,
+// K 2) the chunk count drops, so a chunk may end up slightly larger than max;
+// exceeding a soft cap by one is far cheaper than a permanently unfoldable node.
+func chunkIDs(ids []int64, max int) [][]int64 {
+	if max <= 0 || len(ids) <= max {
+		return [][]int64{ids}
+	}
+	n := (len(ids) + max - 1) / max
+	if n > len(ids) {
+		n = len(ids)
+	}
+	for n > 1 && len(ids)/n < 2 {
+		n--
+	}
+	size := (len(ids) + n - 1) / n
+	var out [][]int64
+	for start := 0; start < len(ids); start += size {
+		end := min(start+size, len(ids))
+		out = append(out, ids[start:end])
+	}
+	return out
+}
+
+// blockFor builds a block for one member group: the sorted members plus every
+// external (non-member) parent as a context anchor (§3.1 "父作锚不作成员").
+func (g *coldGraph) blockFor(ids []int64) block {
+	memberSet := make(map[int64]bool, len(ids))
+	for _, m := range ids {
+		memberSet[m] = true
+	}
+	anchorSet := map[int64]bool{}
+	for _, m := range ids {
+		for _, par := range g.parents[m] {
+			if memberSet[par] {
+				continue
+			}
+			pn, ok := g.nodes[par]
+			if !ok || pn.Kind == db.KindDigest {
+				continue
+			}
+			anchorSet[par] = true
+		}
+	}
+	anchors := make([]int64, 0, len(anchorSet))
+	for a := range anchorSet {
+		anchors = append(anchors, a)
+	}
+	sort.Slice(anchors, func(i, j int) bool { return anchors[i] < anchors[j] })
+	return block{Members: ids, Anchors: anchors}
 }
 
 // blockSignature is the change-detection key (§5.3): a hash over the sorted

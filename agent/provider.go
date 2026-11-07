@@ -106,14 +106,22 @@ type RetryConfig struct {
 // threshold math (window − summary reserve − buffer) would go non-positive and
 // compaction would fire every turn; above the cap it would never fire.
 const (
-	defaultWindowK = 200  // unset → assume a 200K window (Claude default)
-	minWindowK     = 32   // floor so effectiveWindow stays comfortably positive
+//
+// The default is deliberately conservative. Guessing HIGH is the dangerous
+// direction: compaction then waits past the point where it can still help, the
+// provider rejects the request, and the only recovery left is one reactive
+// compact. A production profile was left at 0 while its model capped at 128K, so
+// the 200K assumption put the auto threshold at ~167K — the call 400'd long
+// before it, and the error surfaced as a plain model failure.
+	defaultWindowK = 128  // unset → assume a 128K window (the common floor, not the max)
+	minWindowK     = 32   // floor: 32K − 8K summary reserve − 13K buffer still leaves a positive threshold
 	maxWindowK     = 1000 // cap at 1M tokens (user request)
 )
 
 // CompactionWindow returns the model context window in TOKENS for compaction
 // thresholds, resolved from the user-configured size (ContextWindowK). 0/unset →
-// a 200K default; otherwise clamped to [32K, 1M] so compaction stays effective.
+// a conservative 128K default; otherwise clamped to [32K, 1M] so compaction stays
+// effective without pinning a small window up to a size it does not have.
 func (c Config) CompactionWindow() int {
 	k := c.ContextWindowK
 	if k <= 0 {

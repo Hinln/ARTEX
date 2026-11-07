@@ -384,7 +384,10 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 	// derived_from — possibly several facts combined) and its yields (the
 	// facts/findings it produced). factFrom maps a fact → the intent that
 	// produced it. This is the relationship layer the flat lists lacked.
-	edges, _ := t.ts.Edges(5000)
+	//
+	// Unbounded: Edges(5000) used to cut real lineage off (production tasks run
+	// 5,072–6,383 edges), leaving planner-visible parents/yields silently short.
+	edges, _ := t.ts.Edges(allGraphEdges)
 	parentsOf := map[int64][]int64{}
 	yieldsOf := map[int64][]int64{}
 	factFrom := map[int64]int64{}
@@ -408,7 +411,7 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 	// — hidden() only folds a member out when it is covered AND still cold. Computed
 	// every round (cheap for real graph sizes); nil map degrades safely.
 	var hotAtRender map[int64]bool
-	if cg, _, err := loadColdGraph(t.ts); err == nil {
+	if cg, err := loadColdShape(t.ts); err == nil {
 		hotAtRender = cg.hotSet()
 	}
 	hidden := func(id int64) bool { _, c := covered[id]; return c && !hotAtRender[id] }
@@ -445,15 +448,15 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 	// now distinct node kinds. recent_facts surfaces fact summaries (esp.
 	// negative results) so the planner sees them in one call; full content
 	// via node_detail(id).
-	vulnNodes, _ := t.ts.ListByKind(db.KindFinding, 1000)
-	factNodes, _ := t.ts.ListByKind(db.KindFact, 1000) // newest first
-	out["findings_total"] = len(vulnNodes)             // 确认漏洞总数（目标判定看它）；明细见 finding_list（最新一窗）
-	out["facts"] = len(factNodes)                      // 探索事实/结论数（含否定结论）
 	// findings 是任务里最高价值的产物 → 概览带最新一窗（≤10 条，vulnNodes 已按 id 降序即最新在前），
 	// 让 planner 每轮判目标时一眼看到最近确认的漏洞；全量/更早的用 list_findings 取。
 	// 每条只留 {id, summary, from_intent?}：from_intent 是产生本漏洞的意图。
 	// evidence/assets/vulnclass/severity/state 等仍可用 list_findings / node_detail(id) 取。
 	const findingListCap = 10
+	vulnNodes, _ := t.ts.ListByKind(db.KindFinding, findingListCap)
+	kindCounts, _ := t.ts.Stats()
+	out["findings_total"] = kindCounts[db.KindFinding] // 确认漏洞总数（目标判定看它）；明细见 finding_list（最新一窗）
+	out["facts"] = kindCounts[db.KindFact]             // 探索事实/结论数（含否定结论）
 	findingList := make([]map[string]any, 0, findingListCap)
 	for _, n := range vulnNodes {
 		if len(findingList) >= findingListCap {
@@ -468,31 +471,46 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 		findingList = append(findingList, m)
 	}
 	out["finding_list"] = findingList
-	// recent_facts：非折叠事实里最新的一窗（≤N，factNodes 按 id 降序即最新在前）。已折进
-	// digest 且仍冷的（hidden）走 cold_digests，不在此重复。每条 {id, summary, from_intent?,
-	// confidence?}；evidence 等详情用 node_detail(id)。更早的用 list_facts 翻。
+	// recent_facts：非折叠事实里最新的一窗（≤N）。已折进 digest 且仍冷的（hidden）走
+	// cold_digests，不在此重复。每条 {id, summary, from_intent?, confidence?}；evidence 等
+	// 详情用 node_detail(id)。更早的用 list_facts 翻。
+	//
+	// Read newest-first in small pages and stop as soon as the window is full: the
+	// old code always pulled 1,000 fact rows *with payloads* every planner round,
+	// and on a fact-heavy task that payload column alone dominated the round.
 	const recentFactsCap = 20
 	recentFacts := make([]map[string]any, 0, recentFactsCap)
-	for _, n := range factNodes {
-		if len(recentFacts) >= recentFactsCap {
+	var factCursor int64
+	for page := 0; page < overviewFactPages && len(recentFacts) < recentFactsCap; page++ {
+		nodes, more, err := t.ts.ListByKindPage(db.KindFact, factCursor, overviewFactPageSize)
+		if err != nil || len(nodes) == 0 {
 			break
 		}
-		if hidden(n.ID) {
-			continue // 已折进 digest 且仍冷 —— 见 cold_digests
-		}
-		m := compactNode(n)
-		if from := factFrom[n.ID]; from > 0 {
-			m["from_intent"] = from // 本事实由哪个意图产生
-		}
-		// confidence 带进概览：让规划者一眼看出哪条结论只是 inferred（尤其否定结论
-		// 别当铁案）；evidence 较长，留给 node_detail(id)。
-		var fp map[string]any
-		if json.Unmarshal(n.Payload, &fp) == nil {
-			if c, ok := fp["confidence"].(string); ok && c != "" {
-				m["confidence"] = c
+		for _, n := range nodes {
+			if len(recentFacts) >= recentFactsCap {
+				break
 			}
+			if hidden(n.ID) {
+				continue // 已折进 digest 且仍冷 —— 见 cold_digests
+			}
+			m := compactNode(n)
+			if from := factFrom[n.ID]; from > 0 {
+				m["from_intent"] = from // 本事实由哪个意图产生
+			}
+			// confidence 带进概览：让规划者一眼看出哪条结论只是 inferred（尤其否定结论
+			// 别当铁案）；evidence 较长，留给 node_detail(id)。
+			var fp map[string]any
+			if json.Unmarshal(n.Payload, &fp) == nil {
+				if c, ok := fp["confidence"].(string); ok && c != "" {
+					m["confidence"] = c
+				}
+			}
+			recentFacts = append(recentFacts, m)
 		}
-		recentFacts = append(recentFacts, m)
+		if !more {
+			break
+		}
+		factCursor = nodes[len(nodes)-1].ID
 	}
 	out["recent_facts"] = recentFacts
 	// recent_done_intents：非折叠的已结束意图里最新的一窗（≤N，recentDone 已按 id 降序）。
@@ -562,6 +580,16 @@ func inheritedMap(m map[string]any, sourceTaskID int64) map[string]any {
 }
 
 const (
+	// allGraphEdges is "no cap" for the overview lineage read. Edges(limit<=0)
+	// defaults to 5000, which real tasks exceed and which silently truncates the
+	// parent/yields maps the planner reasons over.
+	allGraphEdges = 1 << 30
+	// overviewFactPageSize / overviewFactPages bound how far the overview walks
+	// back looking for 20 unfolded facts. Folded facts are skipped, so a task
+	// whose newest page is entirely folded must be able to page a little further
+	// without the read becoming unbounded.
+	overviewFactPageSize          = 40
+	overviewFactPages             = 5
 	relatedOverviewTotalTextRunes      = 48_000
 	relatedOverviewMaxTextPerSource    = 8_000
 	relatedOverviewMaxGoalsPerSource   = 8

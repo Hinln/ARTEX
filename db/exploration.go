@@ -736,6 +736,35 @@ WHERE exploration_id=$1 AND kind=$2 ORDER BY id DESC LIMIT $3`, s.expID, kind, l
 	return scanNodes(rows)
 }
 
+// KindLite is one node reduced to what the graph renderer needs: its id and
+// state. It carries no payload, which is what makes loading a whole graph for
+// the planner's overview cheap even when the payload column runs to megabytes.
+type KindLite struct {
+	ID    int64
+	Kind  string
+	State string
+}
+
+// LiteNodes returns every node's id/kind/state for this exploration, without
+// payloads. Used by the planner overview's hot/cold pass, which needs all nodes
+// to decide reachability but never reads their bodies.
+func (s *ExplorationStore) LiteNodes() ([]KindLite, error) {
+	rows, err := s.db.Query(`SELECT id, kind, state FROM exploration_nodes WHERE exploration_id=$1 ORDER BY id`, s.expID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []KindLite
+	for rows.Next() {
+		var n KindLite
+		if err := rows.Scan(&n.ID, &n.Kind, &n.State); err != nil {
+			return nil, err
+		}
+		out = append(out, n)
+	}
+	return out, rows.Err()
+}
+
 // ListByKindPage returns one newest-first page of nodes of a kind for reverse
 // pagination: up to `limit` nodes with id < `before` (before<=0 = the newest page).
 // hasMore reports whether still-older nodes exist, so a client (e.g. the worker
@@ -1272,7 +1301,7 @@ func (d *DB) TokenTotalsAll() (map[int64]TokenUsage, error) {
 // LastActivityAll returns the unix time of the most recent activity per
 // exploration (exploration_id → max created_at epoch), one query for all tasks.
 // Persisted (unlike Engine.LastActivity's in-memory map), so it survives restarts
-// and gives终态任务 a stable last-activity time for history views.
+// and gives终态任务 a stable "ran until" time for computing run duration.
 func (d *DB) LastActivityAll() (map[int64]int64, error) {
 	rows, err := d.Query(`SELECT exploration_id, EXTRACT(EPOCH FROM MAX(created_at))::bigint FROM activity GROUP BY exploration_id`)
 	if err != nil {

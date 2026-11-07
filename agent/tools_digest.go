@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/Autumn-27/artex/db"
 	actool "github.com/Autumn-27/norma/tool"
@@ -35,13 +36,31 @@ func (t *ToolSet) digestMemberEntry(store *db.ExplorationStore, id int64) map[st
 	return m
 }
 
-// coldDigestsRecent returns a store's active digests as flat bodies for
-// graph_overview, ordered by the recency of their freshest member (max member id ≈
-// latest cooled node — a digest near the live frontier is likelier relevant), and
-// capped at `cap`. Overflow digest ids are returned separately (moreIDs) so they
-// stay reachable via expand_digest even when not shown inline — cold_digests is the
-// only exit for folded cold nodes. Shared by the current task overview and the
-// read-only related-task overview (§2 cross-task reuse).
+// coldDigestBodyMax caps how much of a digest body is inlined per planner round.
+// Bodies are model-written prose with no length guarantee — one production digest
+// was 7,733 chars over 1,444 members, and the overview inlined up to 15 of them
+// (20,482 chars on the heaviest task, ~5K tokens every single round). The head of
+// the body is enough to tell the planner what the region concluded; the full text
+// stays one expand_digest(id) away.
+const coldDigestBodyMax = 600
+
+// digestHead trims a body for inline display, marking the cut so the planner
+// knows the summary is partial rather than that the region ended there.
+func digestHead(body string) (string, bool) {
+	r := []rune(body)
+	if len(r) <= coldDigestBodyMax {
+		return body, false
+	}
+	return strings.TrimSpace(string(r[:coldDigestBodyMax])) + "…", true
+}
+
+// coldDigestsRecent returns a store's active digests for graph_overview, ordered
+// by the recency of their freshest member (max member id ≈ latest cooled node — a
+// digest near the live frontier is likelier relevant), and capped at `cap`.
+// Overflow digest ids are returned separately (moreIDs) so they stay reachable via
+// expand_digest even when not shown inline — cold_digests is the only exit for
+// folded cold nodes. Shared by the current task overview and the read-only
+// related-task overview (§2 cross-task reuse).
 func coldDigestsRecent(store *db.ExplorationStore, cap int) (shown []map[string]any, moreIDs []int64) {
 	ads, err := store.ActiveDigests()
 	if err != nil || len(ads) == 0 {
@@ -63,11 +82,12 @@ func coldDigestsRecent(store *db.ExplorationStore, cap int) (shown []map[string]
 		if len(ms) > 0 {
 			fresh = ms[len(ms)-1]
 		}
-		items = append(items, dg{
-			id:        d.ID,
-			entry:     map[string]any{"id": d.ID, "body": p.Body, "member_count": len(ms)},
-			freshness: fresh,
-		})
+		head, cut := digestHead(p.Body)
+		entry := map[string]any{"id": d.ID, "body": head, "member_count": len(ms)}
+		if cut {
+			entry["body_truncated"] = true // expand_digest(id) returns the full body
+		}
+		items = append(items, dg{id: d.ID, entry: entry, freshness: fresh})
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].freshness > items[j].freshness })
 	for i, it := range items {

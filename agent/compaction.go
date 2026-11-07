@@ -43,21 +43,56 @@ type Compactor struct {
 	mu      sync.Mutex
 	running map[int64]bool
 	lastRun map[int64]time.Time
+	// failures counts consecutive failed compaction runs per exploration. A
+	// backend that is down (quota, 502, timeout) used to be re-probed ~60s after
+	// every planner round, forever: one production task logged 8,986 compress
+	// calls for 20 digests. The counter drives an exponential backoff; a single
+	// successful run resets it.
+	failures map[int64]int
+	// blockedUntil is the per-exploration backoff deadline. While it is in the
+	// future, OnPlannerRound returns without loading the graph at all.
+	blockedUntil map[int64]time.Time
+	// blockFailures counts consecutive failures per block signature, so a single
+	// block the model cannot summarize (oversized, repeatedly 502'ing) stops
+	// costing a call every cooldown while its neighbours keep folding.
+	blockFailures map[string]int
+	// maxBlocks caps how many blocks one background run folds. A task with
+	// thousands of eligible cold nodes otherwise fires thousands of LLM calls in
+	// a single un-cancellable burst that outlives several planner rounds.
+	maxBlocks int
 }
+
+// Compaction backoff: after `tripAfter` consecutive failed runs the exploration
+// is skipped for a cooling-off window that doubles each further failure, capped
+// at maxCompactBackoff. A block whose own signature failed `blockTripAfter`
+// times in a row is skipped until its signature changes (a member's content
+// version bumped), because retrying an identical input has no chance of working
+// and the model is charged each attempt.
+const (
+	tripAfter         = 3
+	blockTripAfter    = 2
+	baseBackoff       = time.Minute
+	maxCompactBackoff = 30 * time.Minute
+	maxBlocksPerRun   = 8
+)
 
 // NewCompactor builds a compactor. prov/model are used for the §4 body LLM call
 // (same model the agent runs on, per §4). A nil Compactor is a safe no-op.
 func NewCompactor(prov llm.Provider, model string) *Compactor {
 	return &Compactor{
-		prov:     prov,
-		model:    model,
-		params:   defaultColdParams(),
-		n:        20,
-		m:        8,
-		cooldown: 60 * time.Second,
-		maxDur:   5 * time.Minute,
-		running:  map[int64]bool{},
-		lastRun:  map[int64]time.Time{},
+		prov:          prov,
+		model:         model,
+		params:        defaultColdParams(),
+		n:             20,
+		m:             8,
+		cooldown:      60 * time.Second,
+		maxDur:        5 * time.Minute,
+		running:       map[int64]bool{},
+		lastRun:       map[int64]time.Time{},
+		failures:      map[int64]int{},
+		blockedUntil:  map[int64]time.Time{},
+		blockFailures: map[string]int{},
+		maxBlocks:     maxBlocksPerRun,
 	}
 }
 
@@ -83,7 +118,8 @@ func (c *Compactor) OnPlannerRound(ctx context.Context, ts *db.ExplorationStore)
 		return // already running, or within cooldown —派生态最终一致，下轮再压
 	}
 	go func() {
-		defer c.finish(ts.ID())
+		attempted, ok := 0, 0
+		defer func() { c.finish(ts.ID(), attempted > 0 && ok == 0) }()
 		bg, cancel := context.WithTimeout(context.WithoutCancel(ctx), c.maxDur)
 		defer cancel()
 		// 压缩是裸 provider 调用（compress 里直接 prov.Complete），不经过 agentcore
@@ -93,9 +129,9 @@ func (c *Compactor) OnPlannerRound(ctx context.Context, ts *db.ExplorationStore)
 		// 也让 llmrec 能把这次调用的 token 归因回该探索（此前记不到）。
 		bg = transcript.WithSessionID(bg, fmt.Sprintf("exp%d-compactor", ts.ID()))
 		if needMajor {
-			c.major(bg, ts)
+			attempted, ok = c.major(bg, ts)
 		} else {
-			c.minor(bg, ts)
+			attempted, ok = c.minor(bg, ts)
 		}
 	}()
 	_ = round
@@ -144,27 +180,50 @@ func (c *Compactor) maintain(ts *db.ExplorationStore) (round int64, uncompressed
 }
 
 // minor folds the not-yet-covered eligible-cold set into new digest segments
-// (tiered append, §5). Existing digests are untouched.
-func (c *Compactor) minor(ctx context.Context, ts *db.ExplorationStore) {
+// (tiered append, §5). Existing digests are untouched. Returns how many blocks
+// were attempted and how many succeeded (drives the run-level backoff).
+// foldableBatch picks the blocks one background run may attempt: at most limit,
+// skipping any whose signature the block breaker has already given up on, and
+// stopping early once the run's context is done. It is the single place both
+// minor and major apply those three rules, so the bounding can be reasoned about
+// (and tested) without a database or a model.
+func foldableBatch(ctx context.Context, blocks []block, cvers map[int64]int, limit int, open func(string) bool) []block {
+	if limit <= 0 {
+		limit = len(blocks)
+	}
+	out := make([]block, 0, min(limit, len(blocks)))
+	for _, b := range blocks {
+		if len(out) >= limit || ctx.Err() != nil {
+			break
+		}
+		if open != nil && !open(blockSignature(b, cvers)) {
+			continue // identical input already failed — don't pay for another call
+		}
+		out = append(out, b)
+	}
+	return out
+}
+
+func (c *Compactor) minor(ctx context.Context, ts *db.ExplorationStore) (attempted, ok int) {
 	round, err := ts.RoundNo()
 	if err != nil {
-		return
+		return 0, 0
 	}
 	g, nodeByID, err := loadColdGraph(ts)
 	if err != nil {
-		return
+		return 0, 0
 	}
 	stamps, err := ts.ColdStamps()
 	if err != nil {
-		return
+		return 0, 0
 	}
 	cvers, err := ts.ContentVersions()
 	if err != nil {
-		return
+		return 0, 0
 	}
 	covered, err := ts.CoveredMembers()
 	if err != nil {
-		return
+		return 0, 0
 	}
 	hot := g.hotSet()
 	elig := g.eligibleCold(g.structuralCold(hot), stamps, round, c.params)
@@ -176,15 +235,21 @@ func (c *Compactor) minor(ctx context.Context, ts *db.ExplorationStore) {
 	}
 	blocks := g.group(uncompressed, c.params)
 	if len(blocks) == 0 {
-		return // this batch has no ≥2 connected/shared-parent block — nothing to fold (§7)
+		return 0, 0 // this batch has no ≥2 connected/shared-parent block — nothing to fold (§7)
 	}
-	for _, b := range blocks {
-		c.foldBlock(ctx, ts, g, b, nodeByID, cvers, c.generationFor(b, nil))
+	for _, b := range foldableBatch(ctx, blocks, cvers, c.maxBlocks, c.blockOpen) {
+		attempted++
+		if c.foldBlock(ctx, ts, g, b, nodeByID, cvers, c.generationFor(b, nil)) {
+			ok++
+		}
 	}
 	// A minor may have pushed the segment count over M → merge in the same run.
 	if ad, e := ts.ActiveDigests(); e == nil && len(ad) >= c.m {
-		c.major(ctx, ts)
+		a2, o2 := c.major(ctx, ts)
+		attempted += a2
+		ok += o2
 	}
+	return attempted, ok
 }
 
 // major re-derives the whole grouping from source over ALL eligible-cold nodes
@@ -192,35 +257,37 @@ func (c *Compactor) minor(ctx context.Context, ts *db.ExplorationStore) {
 // unchanged blocks keep their digest (no LLM), stale digests are superseded, and
 // new/changed blocks are compressed afresh. This is where tiered fragments of one
 // direction merge and where "later became connected" blocks unify (§5.2).
-func (c *Compactor) major(ctx context.Context, ts *db.ExplorationStore) {
+func (c *Compactor) major(ctx context.Context, ts *db.ExplorationStore) (attempted, ok int) {
 	round, err := ts.RoundNo()
 	if err != nil {
-		return
+		return 0, 0
 	}
 	g, nodeByID, err := loadColdGraph(ts)
 	if err != nil {
-		return
+		return 0, 0
 	}
 	stamps, err := ts.ColdStamps()
 	if err != nil {
-		return
+		return 0, 0
 	}
 	cvers, err := ts.ContentVersions()
 	if err != nil {
-		return
+		return 0, 0
 	}
 	active, err := ts.ActiveDigests()
 	if err != nil {
-		return
+		return 0, 0
 	}
 	hot := g.hotSet()
 	elig := g.eligibleCold(g.structuralCold(hot), stamps, round, c.params)
 	blocks := g.group(elig, c.params)
 
 	bySig := map[string]*db.Node{}
+	digestSig := map[int64]string{} // digest id → signature
 	for _, d := range active {
 		sig, _ := digestSigGen(d)
 		bySig[sig] = d
+		digestSig[d.ID] = sig
 	}
 	desired := map[string]bool{}
 	var toCreate []block
@@ -232,37 +299,91 @@ func (c *Compactor) major(ctx context.Context, ts *db.ExplorationStore) {
 		}
 		toCreate = append(toCreate, b)
 	}
-	// Supersede stale digests FIRST (atomic drop of their covers edges) so a member
-	// is never covered by both an old and a new digest (§5.1 one-member-one-digest).
+	// Replace stale digests only where the NEW grouping reproduces their members.
+	//
+	// Members of a retired digest are exactly the eligible-cold nodes it covers, so
+	// the new grouping covers them too unless the grouping changed shape (an
+	// ineligible member, a revived branch, or a different membership cap). Deciding
+	// supersede from that structural fact — instead of "whoever has a freshly
+	// created digest" — is what keeps a lowered MaxMembers from silently dropping
+	// the tail of a legacy oversized digest: those members stay covered by the old
+	// digest until the new grouping actually includes them.
+	//
+	// A digest is replaced only when the run attempted every block whose signature
+	// is absent from the active set (i.e. nothing was skipped by the block breaker
+	// or the per-run cap); otherwise it is kept so its covers edges remain the
+	// source of truth until a later run finishes the job.
+	attempted, ok = 0, 0
+	replaced := map[int64]bool{} // members now covered by a freshly created digest
+	incomplete := len(toCreate) > len(foldableBatch(ctx, toCreate, cvers, c.maxBlocks, c.blockOpen))
+	for _, b := range foldableBatch(ctx, toCreate, cvers, c.maxBlocks, c.blockOpen) {
+		attempted++
+		if c.foldBlock(ctx, ts, g, b, nodeByID, cvers, c.generationFor(b, active)) {
+			ok++
+			for _, m := range b.Members {
+				replaced[m] = true
+			}
+		}
+	}
+	if incomplete {
+		log.Printf("[compaction] exp=%d 本轮未覆盖全部待压块（上限/熔断），保留旧 digest 直到后续轮次补齐", ts.ID())
+	}
 	var stale []int64
 	for _, d := range active {
-		sig, _ := digestSigGen(d)
-		if !desired[sig] {
+		if desired[digestSig[d.ID]] {
+			continue // this digest's block survived unchanged
+		}
+		members := digestMemberIDs(d)
+		if len(members) == 0 {
+			stale = append(stale, d.ID)
+			continue
+		}
+		if incomplete {
+			continue // never retire a digest while its replacement set is partial
+		}
+		allReplaced := true
+		for _, m := range members {
+			if !replaced[m] {
+				allReplaced = false
+				break
+			}
+		}
+		if allReplaced {
 			stale = append(stale, d.ID)
 		}
 	}
 	if err := ts.SupersedeDigests(stale); err != nil {
 		log.Printf("[compaction] supersede exp=%d: %v", ts.ID(), err)
 	}
-	for _, b := range toCreate {
-		c.foldBlock(ctx, ts, g, b, nodeByID, cvers, c.generationFor(b, active))
-	}
+	return attempted, ok
 }
 
 // foldBlock compresses one block and writes its digest — with a commit-time
 // liveness recheck (§ concurrency): between grouping and write the graph may have
 // changed, so any member that has since gone hot (revived) is dropped from the
 // covers set. If the block dissolves below K it is skipped.
-func (c *Compactor) foldBlock(ctx context.Context, ts *db.ExplorationStore, g *coldGraph, b block, nodeByID map[int64]*db.Node, cvers map[int64]int, generation int) {
+//
+// Returns whether the model call itself succeeded. That (not "a digest was
+// written") is what the run-level backoff keys off: a block that revived out
+// from under us is a healthy backend, while a compress error means the endpoint
+// is failing and the run should not keep spending calls.
+func (c *Compactor) foldBlock(ctx context.Context, ts *db.ExplorationStore, g *coldGraph, b block, nodeByID map[int64]*db.Node, cvers map[int64]int, generation int) bool {
+	sig := blockSignature(b, cvers)
 	body, err := c.compress(ctx, g, b, nodeByID)
 	if err != nil {
+		// A cancellation is the run winding down (deadline), not a content
+		// problem: don't poison the block's counter with it.
+		if ctx.Err() == nil {
+			c.recordBlockResult(sig, false)
+		}
 		log.Printf("[compaction] compress exp=%d block=%v: %v", ts.ID(), b.Members, err)
-		return
+		return false
 	}
+	c.recordBlockResult(sig, true)
 	// Re-read fresh state and drop any member that revived while we compressed.
 	fresh, _, err := loadColdGraph(ts)
 	if err != nil {
-		return
+		return true
 	}
 	freshHot := fresh.hotSet()
 	members := make([]int64, 0, len(b.Members))
@@ -272,13 +393,15 @@ func (c *Compactor) foldBlock(ctx context.Context, ts *db.ExplorationStore, g *c
 		}
 	}
 	if len(members) < c.params.K {
-		return // block revived out from under us — leave those nodes hot, don't fold
+		return true // block revived out from under us — leave those nodes hot, don't fold
 	}
 	final := block{Members: members, Anchors: b.Anchors}
 	payload := digestPayload(body, final, nodeByID, generation, blockSignature(final, cvers))
 	if _, err := ts.AddDigest(payload, members); err != nil {
 		log.Printf("[compaction] add digest exp=%d: %v", ts.ID(), err)
+		return false
 	}
+	return true
 }
 
 // generationFor computes a digest's重摘代次 (§1): 1 for a fresh fold; for a major
@@ -307,11 +430,16 @@ func (c *Compactor) generationFor(b block, active []*db.Node) int {
 	return best + 1
 }
 
-// tryStart acquires the per-task compaction lock, honoring the cooldown.
+// tryStart acquires the per-task compaction lock, honoring the cooldown and the
+// failure backoff. While a task is backing off, this returns before the caller
+// loads the graph, so a broken backend costs nothing at all.
 func (c *Compactor) tryStart(expID int64) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.running[expID] {
+		return false
+	}
+	if until, ok := c.blockedUntil[expID]; ok && time.Now().Before(until) {
 		return false
 	}
 	if t, ok := c.lastRun[expID]; ok && time.Since(t) < c.cooldown {
@@ -321,11 +449,50 @@ func (c *Compactor) tryStart(expID int64) bool {
 	return true
 }
 
-func (c *Compactor) finish(expID int64) {
+// finish releases the per-task lock and records whether the run folded anything
+// successfully. A run in which every attempted block failed (backend down, quota
+// exhausted, timeouts) starts the exponential backoff so the exploration stops
+// burning a model call per planner round; any single success clears it.
+func (c *Compactor) finish(expID int64, failed bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.running[expID] = false
 	c.lastRun[expID] = time.Now()
+	if !failed {
+		c.failures[expID] = 0
+		delete(c.blockedUntil, expID)
+		return
+	}
+	c.failures[expID]++
+	if n := c.failures[expID]; n >= tripAfter {
+		wait := baseBackoff << uint(n-tripAfter) // 1m, 2m, 4m, ... capped below
+		if wait > maxCompactBackoff || wait <= 0 {
+			wait = maxCompactBackoff
+		}
+		c.blockedUntil[expID] = time.Now().Add(wait)
+		log.Printf("[compaction] exp=%d 连续 %d 次压缩失败，退避 %s（此前每轮都在重试）", expID, n, wait)
+	}
+}
+
+// blockOpen reports whether a block signature may still be attempted, and
+// recordBlockResult records the outcome. A block whose identical input failed
+// blockTripAfter times is not retried until its signature changes (a member's
+// content version bumped), because a deterministic failure cannot heal by being
+// re-sent — but the model is still charged for every attempt.
+func (c *Compactor) blockOpen(sig string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.blockFailures[sig] < blockTripAfter
+}
+
+func (c *Compactor) recordBlockResult(sig string, ok bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if ok {
+		delete(c.blockFailures, sig)
+		return
+	}
+	c.blockFailures[sig]++
 }
 
 // --- helpers: db ↔ coldgraph ---
@@ -355,6 +522,37 @@ func loadColdGraph(ts *db.ExplorationStore) (*coldGraph, map[int64]*db.Node, err
 		cgEdges = append(cgEdges, cgEdge{From: e.From, Rel: e.Rel, To: e.To})
 	}
 	return newColdGraph(cgNodes, cgEdges), byID, nil
+}
+
+// loadColdShape builds the cold-graph view WITHOUT any node payload. This is the
+// read the planner overview needs every round (hot/cold reachability over the
+// whole edge set); the full loadColdGraph reads every payload column and is only
+// justified when the caller actually renders summaries. On a production task
+// with ~4.3k nodes the payload column alone was ~13 MB per call, paid twice per
+// planner round before this split.
+func loadColdShape(ts *db.ExplorationStore) (*coldGraph, error) {
+	nodes, err := ts.LiteNodes()
+	if err != nil {
+		return nil, err
+	}
+	// Edges must be unbounded here: the previous overview path used Edges(5000),
+	// which silently dropped lineage once a task passed 5,000 edges (several
+	// production tasks were at 5,072–6,383), so parents/yields/from_intent came
+	// back incomplete. Edges(0) means "default 5000", so pass an explicit cap.
+	const allEdges = 1 << 30
+	edges, err := ts.Edges(allEdges)
+	if err != nil {
+		return nil, err
+	}
+	cgNodes := make([]cgNode, 0, len(nodes))
+	for _, n := range nodes {
+		cgNodes = append(cgNodes, cgNode{ID: n.ID, Kind: n.Kind, State: n.State})
+	}
+	cgEdges := make([]cgEdge, 0, len(edges))
+	for _, e := range edges {
+		cgEdges = append(cgEdges, cgEdge{From: e.From, Rel: e.Rel, To: e.To})
+	}
+	return newColdGraph(cgNodes, cgEdges), nil
 }
 
 func toDBStampOps(ops []stampOp) []db.StampOp {
@@ -511,14 +709,24 @@ func buildCompressionInput(g *coldGraph, b block, nodeByID map[int64]*db.Node) s
 
 // compress runs the §4 body LLM call on one block. Uses the same model the agent
 // runs on; thinking disabled (a pure summarization step).
+//
+// The output budget scales with the block. A fixed 1500-token cap was hit on
+// 99% of successful calls (measured: 176,773 / 178,591 responses stopped at
+// exactly 1500) and the answer was stored anyway, so most digests ended
+// mid-sentence — and a truncated digest is worse than no digest, because the
+// planner trusts it. The stop reason is therefore checked: an answer cut off at
+// the cap is treated as a failure so the block is retried with a bigger budget
+// (up to compressMaxTokens) or, failing that, left unfolded.
 func (c *Compactor) compress(ctx context.Context, g *coldGraph, b block, nodeByID map[int64]*db.Node) (string, error) {
+	input := buildCompressionInput(g, b, nodeByID)
+	maxTok := compressTokensFor(len(b.Members))
 	req := llm.CompletionRequest{
 		System:    []string{compressionSystemPrompt},
-		Messages:  []llm.Message{llm.UserText(buildCompressionInput(g, b, nodeByID))},
-		MaxTokens: 1500,
+		Messages:  []llm.Message{llm.UserText(input)},
+		MaxTokens: maxTok,
 		Thinking:  "disabled",
 	}
-	msg, _, _, err := c.prov.Complete(ctx, req)
+	msg, stop, _, err := c.prov.Complete(ctx, req)
 	if err != nil {
 		return "", err
 	}
@@ -526,7 +734,37 @@ func (c *Compactor) compress(ctx context.Context, g *coldGraph, b block, nodeByI
 	if body == "" {
 		return "", fmt.Errorf("empty body from model")
 	}
+	// "max_tokens"/"length" = the model ran out of budget mid-sentence. Storing
+	// that as a digest silently loses the tail of the block, so reject it and let
+	// the block-level backoff stop the retry once it is clear the budget is not
+	// the problem.
+	if isTruncatedStop(stop) {
+		return "", fmt.Errorf("body truncated at max_tokens=%d (%d members)", maxTok, len(b.Members))
+	}
 	return body, nil
+}
+
+// compression output budget. Roughly one body token per two member summaries,
+// bounded so a single call never dominates the context: a 64-member block gets
+// 2048 tokens, a 2-member block the 768 floor.
+const (
+	compressMinTokens     = 768
+	compressMaxTokens     = 4096
+	compressTokensPerNode = 32
+)
+
+func compressTokensFor(members int) int {
+	return min(compressMaxTokens, max(compressMinTokens, members*compressTokensPerNode))
+}
+
+// isTruncatedStop reports whether a provider stop reason means the output was
+// cut off by the token cap. Norma normalizes OpenAI's "length" to "max_tokens".
+func isTruncatedStop(stop string) bool {
+	switch strings.ToLower(strings.TrimSpace(stop)) {
+	case "max_tokens", "length", "max_output_tokens":
+		return true
+	}
+	return false
 }
 
 // compressionSystemPrompt is the §4 body prompt.
