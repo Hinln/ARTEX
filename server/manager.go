@@ -592,6 +592,11 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 	if err := pg.EnsureLLMUsageTable(); err != nil {
 		log.Printf("[llmusage] create table: %v", err)
 	}
+	if err := pg.EnsureReproduceSchema(); err != nil {
+		// Additive columns + a new table; a failure disables reproduce verdicts but
+		// must not stop the server (findings still record, just stay unverified).
+		log.Printf("[reproduce] create schema: %v", err)
+	}
 	m := &Manager{dir: dir, pg: pg, assets: pg.Assets(), tasks: map[string]*Task{}, interceptor: intercept.New(pg)}
 	if fp, ferr := newDynamicForwardProxy(func() string { return m.GlobalProxy() }); ferr == nil {
 		m.forwardProxy = fp

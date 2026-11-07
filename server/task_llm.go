@@ -583,9 +583,13 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	workerRuntime := &taskLLMRuntime{s: s, taskID: t.ID, agentKey: "worker"}
 	mainRuntime := &taskLLMRuntime{s: s, taskID: t.ID, agentKey: "mainagent"}
 	tx := transcript.NewStore(filepath.Join(s.m.dir, "transcripts"))
+	// 发现记录器：包一层复现校验。severity=critical/high 的漏洞在落库后由系统
+	// 重放其绑定的 proof 流量并落一条机器结论；模型自评不参与「是否已复现」。
+	// 复现失败不回滚漏洞（那会丢真实产出），只把 confidence 压到 likely。
+	findings := s.findingRecorder()
 	window := workerRuntime.CompactionWindow()
 	wk := agent.NewWorker(workerRuntime, "task-router", s.m.dir, tx, window, s.agentMaxTurns("worker"))
-	wk.SetFindingRecorder(s.evidenceStore())
+	wk.SetFindingRecorder(findings)
 	wk.SetCompactionWindowResolver(workerRuntime.CompactionWindow)
 	wk.SetNonStreaming(workerRuntime.nonStreaming) // 按任务当前激活 profile 的流式开关(每轮读)
 	wk.SetMaxTokens(workerRuntime.maxTokens)       // 同上,输出上限也跟随当前激活 profile
@@ -596,7 +600,7 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	wk.SetWebSearch(s.webSearchFor("worker"))
 	wk.SetConstraintInject(s.constraintInjectWorker) // 操作约束注入 worker(可配置,默认开)
 	pl := agent.NewPlanner(plannerRuntime, "task-router", s.m.dir, tx, plannerRuntime.CompactionWindow(), s.agentMaxTurns("planner"))
-	pl.SetFindingRecorder(s.evidenceStore())
+	pl.SetFindingRecorder(findings)
 	pl.SetCompactionWindowResolver(plannerRuntime.CompactionWindow)
 	pl.SetNonStreaming(plannerRuntime.nonStreaming)
 	pl.SetMaxTokens(plannerRuntime.maxTokens)
@@ -612,7 +616,7 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	// 同模型,随任务 LLM 链解析),压缩用 Complete 一次性生成 body。
 	pl.SetCompactor(agent.NewCompactor(plannerRuntime, "task-router"))
 	main := agent.NewMainAgent(mainRuntime, "task-router", s.m.dir, tx, mainRuntime.CompactionWindow(), s.agentMaxTurns("mainagent"))
-	main.SetFindingRecorder(s.evidenceStore())
+	main.SetFindingRecorder(findings)
 	main.SetCompactionWindowResolver(mainRuntime.CompactionWindow)
 	main.SetNonStreaming(mainRuntime.nonStreaming)
 	main.SetMaxTokens(mainRuntime.maxTokens)
@@ -658,7 +662,7 @@ func (s *Server) workerForTaskSlot(t *Task, slot WorkerSlot) (*agent.Worker, err
 	runtime := &taskLLMRuntime{s: s, taskID: t.ID, agentKey: "worker", pinProfileID: &id}
 	tx := transcript.NewStore(filepath.Join(s.m.dir, "transcripts"))
 	worker := agent.NewWorker(runtime, cfg.Model, s.m.dir, tx, runtime.CompactionWindow(), s.agentMaxTurns("worker"))
-	worker.SetFindingRecorder(s.evidenceStore())
+	worker.SetFindingRecorder(s.findingRecorder())
 	worker.SetCompactionWindowResolver(runtime.CompactionWindow)
 	worker.SetNonStreaming(runtime.nonStreaming)
 	worker.SetMaxTokens(runtime.maxTokens)

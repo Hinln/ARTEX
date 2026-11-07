@@ -262,7 +262,10 @@ export function FindingsTable({
                   />
                 </TableCell>
                 <TableCell>
-                  <StatusBadge domain="severity" value={f.severity} dot />
+                  <div className="flex items-center gap-2">
+                    <StatusBadge domain="severity" value={f.severity} dot />
+                    <ReproduceBadge finding={f} />
+                  </div>
                 </TableCell>
                 <TableCell className="max-w-md">
                   <div className="flex min-w-0 flex-col gap-0.5">
@@ -641,3 +644,46 @@ function FindingFolderTableRows({
     </>
   );
 }
+
+// ReproduceBadge surfaces the SERVER's verdict, never the model's self-assessment.
+// It exists because "看起来成立" and "系统重放后确实成立" are different claims, and
+// the whole point of the reproduce pass is to make that difference visible where
+// a reviewer actually looks.
+function ReproduceBadge({ finding }: { finding: Finding }) {
+  const state = finding.reproduce_state ?? "";
+  if (!state) return null; // never attempted (medium/low, or older rows)
+
+  const meta: Record<string, { label: string; className: string; title: string }> = {
+    passed: {
+      label: "已复现",
+      className: "border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
+      title: "系统重放了该漏洞绑定的 proof 流量，响应与录制证据等价",
+    },
+    failed: {
+      label: "复现未通过",
+      className: "border-destructive/50 bg-destructive/10 text-destructive",
+      title: "系统重放后响应与录制证据不一致：可能已修复，或当初结论不成立。请复核证据",
+    },
+    skipped: {
+      label: "未复现",
+      className: "border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400",
+      title: "该结论无法由系统自动重放（写/删类 PoC，或未绑定可重放的 proof 流量）",
+    },
+    blocked: {
+      label: "复现受阻",
+      className: "border-muted-foreground/30 bg-muted text-muted-foreground",
+      title: "目标不可达、登录态失效或被 WAF 拦截，未能判定",
+    },
+  };
+  const m = meta[state];
+  if (!m) return null;
+  return (
+    <span
+      className={cn("shrink-0 rounded border px-1.5 py-0.5 text-[10px] leading-none", m.className)}
+      title={m.title}
+    >
+      {m.label}
+    </span>
+  );
+}
+

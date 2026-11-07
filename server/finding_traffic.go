@@ -23,6 +23,18 @@ func (s *Server) evidenceStore() *evidence.Store {
 	return evidence.New(s.m.pg, s.m.traffic, filepath.Join(s.m.dir, "evidence"))
 }
 
+// findingRecorder returns the recorder agents use for report_finding: the plain
+// evidence store wrapped with post-record reproduction.
+//
+// Reproduction is a credibility check on the SYSTEM side — the model writes the
+// claim, the server re-sends the finding's own proof request and writes what it
+// actually saw. It is wired here (not in the tool) so every agent that can report
+// a finding gets it without each call site opting in.
+func (s *Server) findingRecorder() FindingRecorder {
+	store := s.evidenceStore()
+	return NewReproduceRecorder(store, NewReproducer(store, s.m.pg, s.m.ProxyAddr(), s.m.ProxyCACert()), s.m.pg)
+}
+
 // Add only new optional properties; preserve edited descriptions, existing
 // properties, agent bindings and disabled flags. The one-time flag also keeps
 // subsequent user unbinding of the evidence reader intact.
