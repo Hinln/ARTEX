@@ -40,7 +40,7 @@ func (r *ReproduceRecorder) Record(ctx context.Context, in db.RecordFindingInput
 	if err != nil || out == nil {
 		return out, err
 	}
-	if r.repro == nil || r.pg == nil || !r.repro.Needed(in.Severity) {
+	if r.repro == nil || r.pg == nil || !r.repro.NeededFor(in.VulnClass, in.Severity) {
 		return out, nil
 	}
 	// Reproduction is best-effort by design: a failure to verify must never roll

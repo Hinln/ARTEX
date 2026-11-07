@@ -137,9 +137,18 @@ func CalibrateSeverity(class, evidence, claimed string) (string, bool, string) {
 	}
 	clsCap, clsWhy := classCeiling(class)
 	evCap, evWhy := evidenceCeiling(evidence)
+	// Policy is the SRC's own grade table: a class the platform files as 中危
+	// cannot be published as 严重 just because the model wrote 严重.
+	polCap, polWhy := PolicyGrade(class)
 
 	final := want
-	reasons := make([]string, 0, 2)
+	reasons := make([]string, 0, 3)
+	if polCap < final {
+		final = polCap
+		if polWhy != "" {
+			reasons = append(reasons, polWhy)
+		}
+	}
 	if clsCap < final {
 		final = clsCap
 		if clsWhy != "" {

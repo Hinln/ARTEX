@@ -1206,6 +1206,39 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 	st, _ := t.Store.Stats()
 	out["exploration"] = st
 
+	// Token accounting, including the cache column. Cache reads are the only
+	// reason a long-running pentest stays affordable: an unchanged system prompt
+	// and tool schema should be billed at the cached rate on every turn after the
+	// first. When cache_hit_ratio sits near zero the prompt is being rewritten
+	// somewhere — that is a bug in prompt assembly, not a billing accident.
+	if rows, err := s.m.PG().TokenByModel(fmt.Sprint(t.ID)); err == nil {
+		var inTok, outTok, cacheRead, cacheWrite int
+		calls := 0
+		for _, row := range rows {
+			calls += row.Calls
+			inTok += row.InputTokens
+			outTok += row.OutputTokens
+			cacheRead += row.CacheReadTokens
+			cacheWrite += row.CacheWriteTokens
+		}
+		ratio := 0.0
+		if inTok+cacheRead > 0 {
+			ratio = float64(cacheRead) / float64(inTok+cacheRead)
+		}
+		budget := 0
+		if v := strings.TrimSpace(os.Getenv("ARTEX_TASK_TOKEN_BUDGET")); v != "" {
+			if n, convErr := strconv.Atoi(v); convErr == nil && n > 0 {
+				budget = n
+			}
+		}
+		out["tokens"] = map[string]any{
+			"calls": calls, "input": inTok, "output": outTok,
+			"cache_read": cacheRead, "cache_write": cacheWrite,
+			"cache_hit_ratio": float64(int(ratio*1000+0.5)) / 1000,
+			"budget":          budget, // 0 = 无上限（默认），设 ARTEX_TASK_TOKEN_BUDGET 才生效
+		}
+	}
+
 	// per-task running state + heartbeat (distinct from "LLM configured").
 	intents, _ := t.Store.ListByKind(db.KindIntent, 100000)
 	inFlight := 0

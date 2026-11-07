@@ -21,6 +21,7 @@ package server
 // silently downgrades a real finding.
 
 import (
+	"github.com/Autumn-27/artex/agent"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -83,6 +84,17 @@ func (r *Reproducer) Needed(severity string) bool {
 		floor = "high"
 	}
 	return severityRank[level] >= severityRank[floor]
+}
+
+// NeededFor adds the class rule on top of the severity floor. Command execution,
+// injection, upload, IDOR and SSRF only exist if the exploit runs again: a worker
+// that "confirmed" one from a single response gets caught here, whatever grade it
+// wrote.
+func (r *Reproducer) NeededFor(class, severity string) bool {
+	if agent.MustVerify(class) {
+		return true
+	}
+	return r.Needed(severity)
 }
 
 // SetMinLevel sets the reproduce floor. "" keeps the built-in default. The floor
