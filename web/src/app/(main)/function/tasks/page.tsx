@@ -4052,6 +4052,9 @@ function CreateTaskSheet({
   const [seedFirstIntent, setSeedFirstIntent] = React.useState(false); // 创建时下发种子意图,worker 免等首轮 planner 直接开跑;默认关闭,走标准先规划再执行
   const [shareGlobalAssets, setShareGlobalAssets] = React.useState(false);
   const [coverageEnabled, setCoverageEnabled] = React.useState(true); // 资产覆盖度功能;默认开。关闭=不计算/展示覆盖度、不累积范围、隐藏范围类工具(company 关联不受影响)
+  // Radix Select 不接受空字符串 value，用哨兵表示「不采用规则集」，存取时与 "" 互转。
+  const RULE_PACK_NONE = "none";
+  const [rulePack, setRulePack] = React.useState(""); // 内置 SRC 规则集(edusrc/enterprise);空=不采用。其"不收"清单落成任务 deny 硬约束
   const [workerCount, setWorkerCount] = React.useState(""); // 本任务 Worker 数;空/0=用全局默认
   const [interceptRules, setInterceptRules] = React.useState<
     AssetInterceptRuleInput[]
@@ -4146,6 +4149,7 @@ function CreateTaskSheet({
         seedFirstIntent,
         planHeartbeatSeconds: heartbeatSec,
         coverageEnabled,
+        rulePack,
         shareGlobalAssets,
         workerCount: workerCountNum,
         schedule: scheduleEnabled ? { ...schedule, task_ids: [] } : undefined,
@@ -4269,6 +4273,26 @@ function CreateTaskSheet({
               />
               <FieldDescription>
                 可选，单个分类；用于任务列表筛选和归档，不影响 Agent 执行。
+              </FieldDescription>
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="rule-pack">测试规则集</FieldLabel>
+              <Select
+                value={rulePack === "" ? RULE_PACK_NONE : rulePack}
+                onValueChange={(v) => setRulePack(v === RULE_PACK_NONE ? "" : v)}
+              >
+                <SelectTrigger id="rule-pack" className="w-full">
+                  <SelectValue placeholder="选择规则集" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={RULE_PACK_NONE}>不采用（仅用本任务约束）</SelectItem>
+                  <SelectItem value="edusrc">EduSRC（教育行业）</SelectItem>
+                  <SelectItem value="enterprise">企业 SRC</SelectItem>
+                </SelectContent>
+              </Select>
+              <FieldDescription>
+                采用后该规则集的「不收」清单会固化为本任务的硬性禁止约束（Agent 无法绕过），漏洞定级口径与无害取证要求
+                注入 planner / worker 提示。仍可在任务内用 set_constraints 追加自定义规则，冲突时取更严的一条。
               </FieldDescription>
             </Field>
             <FieldSet>

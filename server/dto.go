@@ -344,6 +344,12 @@ type FindingDTO struct {
 	ReportStale           bool                       `json:"report_stale"`
 	TrafficBindings       []db.FindingTrafficBinding `json:"traffic_bindings,omitempty"`
 
+	// 系统复现结论（模型不可写）：confidence 只有在当前证据版本下有 passed 复现
+	// 记录时才是 confirmed；reproduce_state 为空表示尚未尝试。
+	Confidence     string `json:"confidence,omitempty"`
+	Reproduced     bool   `json:"reproduced"`
+	ReproduceState string `json:"reproduce_state,omitempty"`
+
 	ID                   string `json:"id"`
 	FindingID            string `json:"finding_id,omitempty"` // standalone findings-table id — the handle for status updates
 	VulnClass            string `json:"vulnclass"`
@@ -484,6 +490,7 @@ func findingFromDB(f *db.DBFinding, assets map[int64]*db.Asset) FindingDTO {
 		FindingID:    i64s(f.ID),
 		TrafficCount: f.TrafficCount, EvidenceVersion: f.EvidenceVersion, ReportEvidenceVersion: f.ReportEvidenceVersion,
 		ReportStale: f.Report != "" && f.EvidenceVersion != f.ReportEvidenceVersion, TrafficBindings: f.TrafficBindings,
+		Confidence: f.Confidence, Reproduced: f.Reproduced, ReproduceState: f.ReproduceState,
 		VulnClass:            f.VulnClass,
 		Name:                 f.Name,
 		Severity:             f.Severity,

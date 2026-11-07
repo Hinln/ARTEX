@@ -350,6 +350,7 @@ export const api = {
     coverageEnabled?: boolean;
     workerCount?: number;
     interceptRules?: AssetInterceptRuleInput[];
+    rulePack?: string;
     schedule?: ScheduleInput;
   }) =>
     post<Task>("/tasks", {
@@ -368,6 +369,9 @@ export const api = {
       coverage_enabled: input.coverageEnabled ?? true, // 默认开;false=关闭资产覆盖度功能
       worker_count: input.workerCount ?? 0, // 0 = 用全局默认 workers
       intercept_rules: input.interceptRules ?? [], // 任务级资产拦截规则
+      // 内置 SRC 规则集（edusrc / enterprise）；其"不收"清单落成任务 deny 硬约束，
+      // 定级口径注入 planner/worker 提示。空 = 不采用。
+      rule_pack: input.rulePack ?? "",
       schedule: input.schedule ? schedulePayload(input.schedule) : undefined,
     }),
   schedules: () => get<{ schedules: TaskSchedule[] }>("/schedules").then((r) => arr(r.schedules)),
@@ -1170,6 +1174,25 @@ export const api = {
       session_header_key,
     }),
   llmProfiles: () => get<{ profiles: LLMProfile[] }>("/llm/profiles").then((r) => arr(r.profiles)),
+  // 信息搜集：FOFA key 池。读取只返回脱敏 key；保存时 value 为空表示沿用原 key。
+  fofaRecon: () =>
+    get<{
+      enabled: boolean;
+      keys: { masked: string }[];
+      max_attempts: number;
+      account_cooldown: number;
+      network_cooldown: number;
+      installed: boolean;
+      mcp_enabled: boolean;
+      tool_cached: number;
+    }>("/recon/fofa"),
+  saveFofaRecon: (input: {
+    enabled: boolean;
+    keys: { masked: string; value: string }[];
+    max_attempts: number;
+    account_cooldown: number;
+    network_cooldown: number;
+  }) => post<{ ok: boolean; key_count: number; enabled: boolean; tool_cached: number }>("/recon/fofa", input),
   saveLLMProfile: (p: {
     id?: number; // omit/0 = create; set = update that profile
     name: string;

@@ -394,6 +394,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	if w.wantConstraints() {
 		sysBody += constraintBlock(ts) // 操作约束(若有)注入系统提示,worker 执行时严格遵守
 	}
+	sysBody += rulePackBlock(ts) // 本任务采用的 SRC 规则集（定级口径 + 取证要求）
 	// 意图块 → 意图锚定资产块 → 启动指令，依次追加到 system 尾部（与 constraintBlock 同一套追加法）。
 	sysBody += renderIntentTask(intent)
 	if as != nil {

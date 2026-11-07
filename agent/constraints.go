@@ -25,6 +25,12 @@ func constraintBlock(ts *db.ExplorationStore) string {
 		if text == "" {
 			continue
 		}
+		// The rulepack marker row (origin=rulepack, text=<pack key>) is bookkeeping
+		// — it names which pack the task installed. Rendering it would show the
+		// agent a bare "edusrc" line under 允许的操作.
+		if c.Origin == rulePackOrigin {
+			continue
+		}
 		if c.Kind == "allow" {
 			allow = append(allow, "- "+text)
 		} else {

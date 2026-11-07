@@ -541,6 +541,11 @@ export interface Finding {
   inherited?: boolean;
   assets?: FindingAsset[];
   ts: string;
+  // 系统复现结论（模型不可写）：confidence 只有在当前证据版本下有 passed 复现
+  // 记录时才是 confirmed；reproduce_state 为空表示尚未尝试。
+  confidence?: "confirmed" | "likely" | "uncertain" | "";
+  reproduced?: boolean;
+  reproduce_state?: "passed" | "failed" | "skipped" | "blocked" | "";
 }
 
 // FindingsPage 是发现列表的服务端分页响应。
