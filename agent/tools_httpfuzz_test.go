@@ -1,6 +1,9 @@
 package agent
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
@@ -89,5 +92,50 @@ func TestSanitizeURLMasksSecrets(t *testing.T) {
 	}
 	if !strings.Contains(got, "id=1") {
 		t.Fatalf("useful param dropped: %s", got)
+	}
+}
+
+// TestFuzzAgainstLocalServer drives the real request path: the handler reflects
+// the value and blows up on a quote, which is exactly what the classifier must
+// separate from noise.
+func TestFuzzAgainstLocalServer(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		v := r.URL.Query().Get("id")
+		if strings.Contains(v, "'") {
+			w.WriteHeader(500)
+			_, _ = w.Write([]byte("You have an error in your SQL syntax; check the manual"))
+			return
+		}
+		_, _ = w.Write([]byte("item id=" + v + " ok"))
+	}))
+	defer srv.Close()
+
+	base, _ := url.Parse(srv.URL + "/item?id=1")
+	client := &http.Client{}
+
+	baseline, err := fuzzOnce(context.Background(), client, "GET", base, "query", "id", "", "1")
+	if err != nil {
+		t.Fatalf("baseline: %v", err)
+	}
+	if baseline.Status != 200 || baseline.SQLError != "" {
+		t.Fatalf("baseline polluted: %+v", baseline)
+	}
+
+	quote, err := fuzzOnce(context.Background(), client, "GET", base, "query", "id", "", "' OR '1'='1")
+	if err != nil {
+		t.Fatalf("payload: %v", err)
+	}
+	quote.Payload = "' OR '1'='1"
+	if quote.SQLError == "" {
+		t.Fatalf("sql error not detected: %+v", quote)
+	}
+	if flags := fuzzFlags(baseline, quote); len(flags) < 2 {
+		t.Fatalf("expected status + error flags, got %v", flags)
+	}
+
+	clean, _ := fuzzOnce(context.Background(), client, "GET", base, "query", "id", "", "2")
+	clean.Payload = "2"
+	if flags := fuzzFlags(baseline, clean); len(flags) != 0 {
+		t.Fatalf("clean value flagged: %v", flags)
 	}
 }
