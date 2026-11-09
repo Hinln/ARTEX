@@ -603,8 +603,8 @@ const (
 	// back looking for 20 unfolded facts. Folded facts are skipped, so a task
 	// whose newest page is entirely folded must be able to page a little further
 	// without the read becoming unbounded.
-	overviewFactPageSize          = 40
-	overviewFactPages             = 5
+	overviewFactPageSize               = 40
+	overviewFactPages                  = 5
 	relatedOverviewTotalTextRunes      = 48_000
 	relatedOverviewMaxTextPerSource    = 8_000
 	relatedOverviewMaxGoalsPerSource   = 8
@@ -1330,6 +1330,10 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 		if strict && rankOfSeverity(a.Severity) < strictRank {
 			a.Severity = RankName(strictRank)
 			severityNote = joinNote(severityNote, "证据命中敏感信息四类死规矩数据，按「敏感信息泄露」计 "+RankName(strictRank))
+		}
+		// 目标身份闸门：结论挂在私网/保留地址上的一律不收。能连通不等于在范围内。
+		if why, bad := t.reservedAssetsReason(pidList(a.AssetIDs)); bad {
+			return actool.Errorf("漏洞未入库：" + why), nil
 		}
 		if t.ts == nil {
 			return actool.Errorf("report_finding 需要任务上下文；平台对话请通过 add_task_hint 向对应任务交接漏洞，并在提示中携带已有的 traffic_refs，由任务 Agent 登记。已登记漏洞可用 bind_finding_traffic 补绑。"), nil

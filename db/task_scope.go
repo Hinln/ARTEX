@@ -59,6 +59,14 @@ func (s *AssetStore) upsertTaskScopeResult(ts TaskScope) (bool, error) {
 	if ts.TaskID <= 0 || ts.Kind == "" {
 		return false, nil
 	}
+	// 保留/私网地址不由 auto 路径授权：TCP 能连通不等于在授权范围内。
+	// 人工(agent/manual)显式登记仍然放行——那是操作者的明确决定，由资产闸门与
+	// 结论校验兜底。
+	if ts.Source == "" && ts.Net != "" {
+		if ReservedScopeReason(ts.Net) != "" {
+			return false, nil
+		}
+	}
 	var domainVal, netVal, companyVal, valueVal any
 	if ts.Domain != "" {
 		domainVal = ts.Domain
@@ -305,7 +313,7 @@ target AS (
   SELECT DISTINCT a.id, a.type,
          COALESCE(a.url, a.domain, a.ip, a.app_name, a.root_domain, '') AS label
   FROM assets a
-  JOIN task_scope ts ON ts.task_id = $1 AND (
+  JOIN task_scope ts ON ts.task_id = $1 AND COALESCE(ts.source, '') <> 'rejected' AND (
        (ts.kind='company'     AND a.company_id = ts.company_id)
     OR (ts.kind='root_domain' AND a.root_domain = ts.domain)
     OR (ts.kind='subdomain'   AND a.domain = ts.domain)

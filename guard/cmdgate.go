@@ -4,7 +4,9 @@
 // model what not to do and nothing enforces it. Measured on 2026-11-07: a task
 // installed the edusrc pack, whose deny list forbids full-port sweeps
 // (agent/rulepacks.go "禁止全端口宽扫"), and the worker ran
-//   nmap -n -Pn -sS -sV -sC -p- --min-rate 800
+//
+//	nmap -n -Pn -sS -sV -sC -p- --min-rate 800
+//
 // on the first attempt, 34 Bash calls, zero errors. This file is the judgment
 // layer that text was supposed to be: it runs before the command executes, and
 // its answer is final.
@@ -12,14 +14,13 @@
 // Three things live here:
 //  1. CmdGate      — hard deny for scan/brute/exfil shapes.
 //  2. RateLimiter  — per-target request rate and concurrency ceiling (default
-//                    300 rpm / 4 concurrent), because "widely" is not only a
-//                    command shape, it is also a number.
+//     300 rpm / 4 concurrent), because "widely" is not only a
+//     command shape, it is also a number.
 //  3. Breaker      — a run that keeps hitting the gate gets stopped instead of
-//                    burning the rest of its budget arguing with a wall.
+//     burning the rest of its budget arguing with a wall.
 package guard
 
 import (
-	"sync/atomic"
 	"context"
 	"net/url"
 	"os"
@@ -27,6 +28,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -114,11 +116,24 @@ type cmdGate struct {
 	cfg gateConfig
 
 	mu       sync.Mutex
-	windows  map[string][]time.Time    // host -> request timestamps within the last minute
-	inflight map[string]int            // host -> in-flight count
-	streak   map[string]int            // session -> consecutive denials
-	openTill map[string]time.Time      // session -> breaker open until
-	lastDeny map[string]string         // session -> last denial reason (for the report)
+	windows  map[string][]time.Time // host -> request timestamps within the last minute
+	inflight map[string]int         // host -> in-flight count
+	streak   map[string]int         // session -> consecutive denials
+	openTill map[string]time.Time   // session -> breaker open until
+	lastDeny map[string]string      // session -> last denial reason (for the report)
+}
+
+// privateTargetRe 抓「命令行里出现私网/保留段字面量」。能连通不等于在范围内：
+// 上一版把本机教学靶场(172.26.0.0/16)当成客户内网，产出一批不可提交的结论。
+// 127.0.0.1 故意不在列表里——本机自测不是"打别人"。
+var privateTargetRe = regexp.MustCompile(`(?i)(?:\b(?:curl|wget|nc|ncat|socat|nmap|masscan|rustscan|sqlmap|hydra|python3?|node|nuclei)\b[^\n]{0,200}?|\bdocker\s+(?:exec|run)\b[^\n]{0,300}?)(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|169\.254\.\d{1,3}\.\d{1,3}|100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}|198\.18\.\d{1,3}\.\d{1,3})`)
+
+func init() {
+	defaultCmdRules = append(defaultCmdRules, cmdRule{
+		Name: "private-target",
+		Re:   privateTargetRe,
+		Hint: "该地址属于 RFC1918/保留网段，不是客户的外部资产。确实拿到授权就先在任务范围里显式登记这个 IP（add_task_scope），否则不要碰；本机自测用 localhost。",
+	})
 }
 
 func newCmdGate(cfg gateConfig) *cmdGate {
@@ -285,7 +300,6 @@ func hostOfURL(s string) string {
 }
 
 var _ = context.Background // keep context imported for future judge wiring
-
 
 // activeGate 指向当前进程里的闸门实例，供 /api/stats 读实时计数。
 var activeGate atomic.Pointer[cmdGate]

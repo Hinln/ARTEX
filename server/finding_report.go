@@ -31,6 +31,17 @@ func (s *Server) generateFindingReport(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusConflict, "漏洞没有可用的探索节点，无法生成复现步骤")
 		return
 	}
+	// 硬规则：没跑通复现的结论不出报告。先跑复现，或带 force=1 明确跳过
+	// （人工核对过证据、只是复现器环境跑不了的情况）。
+	if r.URL.Query().Get("force") != "1" && !f.Reproduced {
+		state := f.ReproduceState
+		if strings.TrimSpace(state) == "" {
+			state = "pending"
+		}
+		writeErr(w, http.StatusConflict, fmt.Sprintf(
+			"该结论没有通过复现（reproduce_state=%s），报告只收跑通的东西：先 POST /api/exploration/findings/%d/reproduce 跑一遍，或确认证据无误后带 ?force=1。", state, f.ID))
+		return
+	}
 	reporter, err := s.m.pg.GetAgentByKey("reporter")
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())

@@ -284,6 +284,9 @@ ON CONFLICT (name) DO NOTHING`,
 	if err := d.seedDefaultAssetInterceptRules(); err != nil {
 		return fmt.Errorf("seed asset intercept rules: %w", err)
 	}
+	if err := d.seedReservedAssetRules(); err != nil {
+		return fmt.Errorf("seed reserved asset rules: %w", err)
+	}
 	return nil
 }
 
@@ -314,6 +317,36 @@ ON CONFLICT DO NOTHING`, r.kind, r.pattern, r.note); err != nil {
 		}
 	}
 	return d.SetSetting("asset_intercept_default_rules_v1", "done")
+}
+
+// seedReservedAssetRules blocks reserved address space at the asset gate, which
+// both insert_assets and the worker's own registration path run through. Seeded
+// separately from the domain list so an install that already marked v1 done still
+// picks these up exactly once.
+func (d *DB) seedReservedAssetRules() error {
+	if v, _, _ := d.GetSetting("asset_intercept_reserved_rules_v1"); v == "done" {
+		return nil
+	}
+	rules := []struct{ pattern, note string }{
+		{"10.0.0.0/8", "[内置] RFC1918 私网，禁止作为外部资产测试"},
+		{"172.16.0.0/12", "[内置] RFC1918 私网（含 Docker bridge）"},
+		{"192.168.0.0/16", "[内置] RFC1918 私网"},
+		{"127.0.0.0/8", "[内置] 回环地址"},
+		{"169.254.0.0/16", "[内置] 链路本地 / 云元数据"},
+		{"100.64.0.0/10", "[内置] CGNAT 共享地址"},
+		{"198.18.0.0/15", "[内置] Clash/CFW fake-ip 段"},
+		{"fc00::/7", "[内置] IPv6 ULA"},
+		{"fe80::/10", "[内置] IPv6 链路本地"},
+	}
+	for _, r := range rules {
+		if _, err := d.Exec(`
+INSERT INTO asset_intercept_rules(enabled, kind, pattern, note, builtin)
+VALUES (true, 'cidr', $1, $2, true)
+ON CONFLICT DO NOTHING`, r.pattern, r.note); err != nil {
+			return fmt.Errorf("reserved asset rule %q: %w", r.pattern, err)
+		}
+	}
+	return d.SetSetting("asset_intercept_reserved_rules_v1", "done")
 }
 
 // builtinSkillVisibility maps a shipped skill's directory name → the built-in
