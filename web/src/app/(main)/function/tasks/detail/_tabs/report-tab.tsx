@@ -2,7 +2,7 @@
 
 import * as React from "react";
 
-import { CheckIcon, CopyIcon, FileTextIcon } from "lucide-react";
+import { CheckIcon, CopyIcon, DownloadIcon, FileTextIcon } from "lucide-react";
 import { toast } from "sonner";
 
 import { Markdown } from "@/components/markdown";
@@ -34,6 +34,22 @@ export function ReportTab({ taskId }: { taskId: string }) {
       active = false;
     };
   }, [taskId]);
+
+  function download() {
+    if (!report) return;
+    // 纯前端落盘：报告就是一份 Markdown 文本，不必拉一个下载接口。
+    const blob = new Blob([report], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const task = taskId ? `-${taskId}` : "";
+    a.href = url;
+    a.download = `artex-report${task}.md`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    toast.success("已下载 Markdown 报告");
+  }
 
   async function copy() {
     if (!report) return;
@@ -78,9 +94,14 @@ export function ReportTab({ taskId }: { taskId: string }) {
         </CardTitle>
         <div className="flex gap-2">
           {report && (
-            <Button size="sm" variant="outline" onClick={copy}>
-              {copied ? <CheckIcon /> : <CopyIcon />} 复制
-            </Button>
+            <>
+              <Button size="sm" variant="outline" onClick={download}>
+                <DownloadIcon /> 下载
+              </Button>
+              <Button size="sm" variant="outline" onClick={copy}>
+                {copied ? <CheckIcon /> : <CopyIcon />} 复制
+              </Button>
+            </>
           )}
         </div>
       </CardHeader>
