@@ -213,6 +213,15 @@ func (s *AssetStore) AddAgentScope(taskID int64, kind, value, reason, source str
 			return ts, fmt.Errorf("无效 ip/cidr: %s", value)
 		}
 		ts.Net = v
+		// 私网/保留段不是禁区，但必须先过人的眼睛：渗透打进去拿到的内网是真战果，
+		// 而同一台机器上的 Docker 靶场长得一模一样。模型自己登记的一律挂 pending，
+		// 由人在任务范围里批准（manual 视为人已经批过）。
+		if reason := ReservedScopeReason(ts.Net); reason != "" && ts.Source != "manual" {
+			ts.Source = "pending"
+			if ts.Reason == "" {
+				ts.Reason = reason + "；等待人工确认这是战果内网而不是本机靶场"
+			}
+		}
 	case "icp", "keyword":
 		parsed, err := ParseScopeInput(ScopeInput{Kind: kind, Value: value})
 		if err != nil {

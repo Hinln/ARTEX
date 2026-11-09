@@ -177,6 +177,18 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		provByProfile:  map[int64]*provEntry{}, llmHealth: newLLMHealthRegistry(m.pg),
 		taskAgents: map[string]*taskAgentBundle{}, archiveWake: make(chan struct{}, 1), credentialWake: make(chan struct{}, 1)}
 	m.SetTaskControlMutex(&s.concMu)
+	// 命令闸门判断「私网目标有没有被批准」时回查本任务的范围表：
+	// session 就是会话 id，DB 那边按 exploration 找 task_scope。
+	if m.pg != nil {
+		guard.SetPrivateScopeLookup(func(session, host string) bool {
+			expID, err := strconv.ParseInt(session, 10, 64)
+			if err != nil || expID <= 0 {
+				return false
+			}
+			ok, err := m.pg.ScopeAllowsHost(ctx, expID, host)
+			return err == nil && ok
+		})
+	}
 	s.initSideQuestions()
 	if m.pg != nil {
 		if err := s.basicAuth.load(m.pg); err != nil {
@@ -940,7 +952,8 @@ func (s *Server) Handler() http.Handler {
 	s.registerRepeater(mux)
 	s.registerFindingReproduce(mux) // 系统复现结论：读取/重新触发
 	s.registerRecon(mux)
-	s.registerEvidenceMaintenance(mux) // 证据回收：删掉没被引用的旧流量            // 信息搜集：FOFA key 池
+	s.registerEvidenceMaintenance(mux) // 证据回收：删掉没被引用的旧流量
+	s.registerScopeApproval(mux)       // 内网目标审批：pending → agent/rejected            // 信息搜集：FOFA key 池
 	mux.HandleFunc("GET /api/exploration/findings/{id}", s.getFinding)
 	mux.HandleFunc("GET /api/exploration/findings/{id}/lineage", s.findingLineage)
 	mux.HandleFunc("POST /api/exploration/findings/{id}/deepen", s.deepenFinding)

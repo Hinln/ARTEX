@@ -129,6 +129,12 @@ type cmdGate struct {
 var privateTargetRe = regexp.MustCompile(`(?i)(?:\b(?:curl|wget|nc|ncat|socat|nmap|masscan|rustscan|sqlmap|hydra|python3?|node|nuclei)\b[^\n]{0,200}?|\bdocker\s+(?:exec|run)\b[^\n]{0,300}?)(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|169\.254\.\d{1,3}\.\d{1,3}|100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}|198\.18\.\d{1,3}\.\d{1,3})`)
 
 func init() {
+	// 自家基础设施的别名：这些不是 IP，正则匹配不到，单列一条。
+	defaultCmdRules = append(defaultCmdRules, cmdRule{
+		Name: "self-target",
+		Re:   regexp.MustCompile(`(?i)\b(?:host\.docker\.internal|gateway\.docker\.internal|metadata\.google\.internal)\b`),
+		Hint: "这是 ARTEX 自身/宿主机的别名，打它等于打自己。要验证本机服务用 127.0.0.1 或容器名。",
+	})
 	defaultCmdRules = append(defaultCmdRules, cmdRule{
 		Name: "private-target",
 		Re:   privateTargetRe,
@@ -176,10 +182,20 @@ func (g *cmdGate) check(session, cmd string) verdict {
 
 	// 2. Hard command shapes.
 	for _, r := range defaultCmdRules {
-		if r.Re.MatchString(cmd) {
-			g.deny(session, r.Name, r.Hint)
-			return verdict{Deny: true, Rule: r.Name, Reason: r.Hint}
+		if !r.Re.MatchString(cmd) {
+			continue
 		}
+		// private-target 不是一刀切：打进去以后的内网是正常战果，只有「自家基础
+		// 设施」和「没登记过的私网」才拦。判定见 pvtlaw.go。
+		if r.Name == "private-target" {
+			if v, blocked := g.judgePrivate(session, cmd); blocked {
+				g.deny(session, v.Rule, v.Reason)
+				return v
+			}
+			continue
+		}
+		g.deny(session, r.Name, r.Hint)
+		return verdict{Deny: true, Rule: r.Name, Reason: r.Hint}
 	}
 
 	// 3. Rate + concurrency, only for commands that actually hit the network.
@@ -329,4 +345,46 @@ func GateStats() map[string]any {
 		"inflight_hosts":       len(g.inflight),
 		"open_sessions":        open,
 	}
+}
+
+// judgePrivate 逐个检查命令里出现的私网目标：
+//   - 自身基础设施（回环/元数据/Docker 默认桥/host.docker.internal）→ 永远拦；
+//   - 已在任务范围内（add_task_scope 且经人工批准）→ 放行；
+//   - 其余私网 → 拦，并告诉跑的人该怎么把它变成合法目标。
+func (g *cmdGate) judgePrivate(session, cmd string) (verdict, bool) {
+	hosts := privateHosts(cmd)
+	for _, h := range hosts {
+		if why := SelfInfraReason(h); why != "" {
+			return verdict{Deny: true, Rule: "self-target",
+				Reason: why + "。要验证自己的服务请访问 127.0.0.1 或容器名，不要把它当客户资产。"}, true
+		}
+	}
+	if len(hosts) == 0 {
+		return verdict{}, false
+	}
+	for _, h := range hosts {
+		if scopeAllowsPrivate(session, h) {
+			continue
+		}
+		return verdict{Deny: true, Rule: "private-target",
+			Reason: "目标 " + h + " 是私网/保留地址，且不在本任务已批准的范围里。" +
+				"内网是正常战果，但要走流程：先 add_task_scope 登记这个地址（说明你是从哪台机器、哪条路发现它的），" +
+				"人工在任务范围里批准之后才能打。自家靶场/宿主网关不会被批准，别浪费时间。"}, true
+	}
+	return verdict{}, false
+}
+
+var privateLiteralRe = regexp.MustCompile(`(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|169\.254\.\d{1,3}\.\d{1,3}|100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}|198\.18\.\d{1,3}\.\d{1,3})`)
+
+// privateHosts 取命令里出现的私网字面量（去重、去掉 :port）。
+func privateHosts(cmd string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, m := range privateLiteralRe.FindAllString(cmd, -1) {
+		if !seen[m] {
+			seen[m] = true
+			out = append(out, m)
+		}
+	}
+	return out
 }
