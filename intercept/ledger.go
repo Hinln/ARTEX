@@ -131,3 +131,20 @@ func normalizeForMatch(s string) string {
 	}
 	return strings.ToLower(strings.TrimSpace(b.String()))
 }
+
+// PrivateHostSeenInLedger reports whether this session already saw host in the
+// output of something it ran. That is the difference between "I pivoted into a
+// network and looked around" and "I typed an address I guessed": only the first
+// has the address in a command's output.
+func PrivateHostSeenInLedger(session, host string) bool {
+	host = strings.TrimSpace(host)
+	if session == "" || host == "" {
+		return false
+	}
+	for _, e := range RecentExecutions(session, 200) {
+		if strings.Contains(e.Output, host) {
+			return true
+		}
+	}
+	return false
+}

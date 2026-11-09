@@ -177,16 +177,29 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		provByProfile:  map[int64]*provEntry{}, llmHealth: newLLMHealthRegistry(m.pg),
 		taskAgents: map[string]*taskAgentBundle{}, archiveWake: make(chan struct{}, 1), credentialWake: make(chan struct{}, 1)}
 	m.SetTaskControlMutex(&s.concMu)
-	// 命令闸门判断「私网目标有没有被批准」时回查本任务的范围表：
-	// session 就是会话 id，DB 那边按 exploration 找 task_scope。
+	// 命令闸门判断「这个私网目标能不能打」时回查本任务——全自动，不等人点头：
+	//   1. 自家基础设施（回环/元数据/Docker 默认桥/host.docker.internal）永远拦，见 guard/pvtlaw.go；
+	//   2. 已在范围表里（agent/manual 批准）→ 放行；
+	//   3. 已经在公网资产上落地（有非保留地址的结论）且这个地址在本次执行输出里出现过
+	//      → 说明是从战果里看出来的内网，自动放行，并把该任务待审的私网范围一并转正；
+	//   4. 其余一律拒。那条路只有在真进去之后才会打开，本机靶场进不来。
 	if m.pg != nil {
 		guard.SetPrivateScopeLookup(func(session, host string) bool {
 			expID, err := strconv.ParseInt(session, 10, 64)
 			if err != nil || expID <= 0 {
 				return false
 			}
-			ok, err := m.pg.ScopeAllowsHost(ctx, expID, host)
-			return err == nil && ok
+			if ok, err := m.pg.ScopeAllowsHost(ctx, expID, host); err == nil && ok {
+				return true
+			}
+			foothold, err := m.pg.HasPublicFoothold(ctx, expID)
+			if err != nil || !foothold {
+				return false
+			}
+			if _, err := m.pg.AutoApprovePendingScope(ctx, expID); err != nil {
+				log.Printf("[scope] 自动批准私网范围失败 exp=%d: %v", expID, err)
+			}
+			return intercept.PrivateHostSeenInLedger(session, host)
 		})
 	}
 	s.initSideQuestions()

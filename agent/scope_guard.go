@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/intercept"
 )
 
 // allowPrivateTargets is the single escape hatch. Default off: a finding whose
@@ -24,7 +26,7 @@ func allowPrivateTargets() bool {
 
 // reservedAssetsReason reports the first reserved address among the finding's
 // assets, with a message that tells the worker what to do about it.
-func (t *ToolSet) reservedAssetsReason(ids []int64) (string, bool) {
+func (t *ToolSet) reservedAssetsReason(ctx context.Context, ids []int64) (string, bool) {
 	if allowPrivateTargets() || t.as == nil || len(ids) == 0 {
 		return "", false
 	}
@@ -40,9 +42,14 @@ func (t *ToolSet) reservedAssetsReason(ids []int64) (string, bool) {
 			if db.ReservedReason(ip) == "" {
 				continue
 			}
-			// 战果内网：范围表里已批准（source=agent/manual）就认，不批准才拒。
+			// 战果内网：范围表里已批准（source=agent/manual）就认。
 			if t.ts != nil {
 				if ok, err := t.ts.DB().ScopeAllowsHost(context.Background(), t.ts.ID(), ip); err == nil && ok {
+					continue
+				}
+				// 全自动路径：已经在公网落地，且这个地址是从执行输出里看来的，就算战果。
+				if foothold, err := t.ts.DB().HasPublicFoothold(context.Background(), t.ts.ID()); err == nil && foothold &&
+					intercept.PrivateHostSeenInLedger(strconv.FormatInt(intercept.ConvIDFromContext(ctx), 10), ip) {
 					continue
 				}
 			}

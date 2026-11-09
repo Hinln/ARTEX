@@ -1332,7 +1332,7 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 			severityNote = joinNote(severityNote, "证据命中敏感信息四类死规矩数据，按「敏感信息泄露」计 "+RankName(strictRank))
 		}
 		// 目标身份闸门：结论挂在私网/保留地址上的一律不收。能连通不等于在范围内。
-		if why, bad := t.reservedAssetsReason(pidList(a.AssetIDs)); bad {
+		if why, bad := t.reservedAssetsReason(ctx, pidList(a.AssetIDs)); bad {
 			return actool.Errorf("漏洞未入库：" + why), nil
 		}
 		if t.ts == nil {
