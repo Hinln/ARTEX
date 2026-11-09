@@ -181,6 +181,14 @@ func (g *cmdGate) check(session, cmd string) verdict {
 	g.mu.Unlock()
 
 	// 2. Hard command shapes.
+	// 自家基础设施先判：这类不是「没登记」的问题，登记了也不能打。
+	for _, h := range selfInfraHostsIn(cmd) {
+		if why := SelfInfraReason(h); why != "" {
+			g.deny(session, "self-target", why)
+			return verdict{Deny: true, Rule: "self-target", Reason: why + "。要验证本机服务用 127.0.0.1 或容器名。"}
+		}
+	}
+
 	for _, r := range defaultCmdRules {
 		if !r.Re.MatchString(cmd) {
 			continue
@@ -388,3 +396,14 @@ func privateHosts(cmd string) []string {
 	}
 	return out
 }
+
+// selfInfraHostsIn 在整条命令里找自家基础设施的别名（不只看网络命令后面那一段）。
+func selfInfraHostsIn(cmd string) []string {
+	var out []string
+	for _, m := range selfInfraAliasRe.FindAllString(cmd, -1) {
+		out = append(out, m)
+	}
+	return out
+}
+
+var selfInfraAliasRe = regexp.MustCompile(`(?i)\b(?:host\.docker\.internal|gateway\.docker\.internal|metadata\.google\.internal)\b`)
