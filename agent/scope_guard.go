@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 	"os"
@@ -36,6 +37,15 @@ func (t *ToolSet) reservedAssetsReason(ids []int64) (string, bool) {
 			continue
 		}
 		for _, ip := range []string{a.IP, hostOfURL(a.URL)} {
+			if db.ReservedReason(ip) == "" {
+				continue
+			}
+			// 战果内网：范围表里已批准（source=agent/manual）就认，不批准才拒。
+			if t.ts != nil {
+				if ok, err := t.ts.DB().ScopeAllowsHost(context.Background(), t.ts.ID(), ip); err == nil && ok {
+					continue
+				}
+			}
 			if why := db.ReservedReason(ip); why != "" {
 				return fmt.Sprintf(
 					"这条结论落在 %s（%s），属于私网/保留地址，不是客户的外部资产：本机 Docker 靶场、宿主网关、云元数据都长这样。\n"+
